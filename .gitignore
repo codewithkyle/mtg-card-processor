@@ -1,0 +1,6 @@
+node_modules
+cards
+database.sql
+.env
+.editorconfig
+data.json
