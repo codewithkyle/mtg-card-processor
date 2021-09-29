@@ -1,11 +1,11 @@
 {
   "dependencies": {
     "clear": "^0.1.0",
-    "cli-progress": "^3.9.0",
-    "dotenv": "^8.2.0",
-    "node-fetch": "^2.6.1",
+    "cli-progress": "^3.9.1",
+    "dotenv": "^8.6.0",
+    "node-fetch": "^2.6.5",
     "stream-chain": "^2.2.4",
-    "stream-json": "^1.7.1",
+    "stream-json": "^1.7.3",
     "yargs": "^16.2.0"
   }
 }

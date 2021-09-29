@@ -4,3 +4,4 @@ database.sql
 .env
 .editorconfig
 data.json
+cards.ndjson

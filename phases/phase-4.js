@@ -9,6 +9,11 @@ const cardsDir = path.join(cwd, "cards");
 const { getDirectories } = require("../lib/utils");
 const { uploadCardData } = require("../lib/upload");
 
+const outFile = path.join(cwd, "cards.ndjson");
+if (fs.existsSync(outFile)){
+    fs.unlinkSync(outFile);
+}
+
 module.exports = async () => {
     clear();
     console.log("🚀 Launching MTG Card Feeder");
@@ -18,12 +23,9 @@ module.exports = async () => {
     bar.start(cards.length, 0);
     for (const dir of cards){
         try {
-            const data = await (await fs.promises.readFile(path.join(dir, "card.json"))).toString();
-            const card = JSON.parse(data);
-            const frontImage = path.join(dir, "front.png");
-            const backImage = path.join(dir, "back.png");
-            await uploadCardData(card, frontImage, backImage);
-            await fs.promises.rmdir(dir, { recursive: true });
+            const data = await fs.promises.readFile(path.join(dir, "card.json"), { encoding: "utf-8" });
+            //const card = JSON.parse(data);
+            await fs.promises.writeFile(outFile, `${data}\n`, { flag: "a" });
         } catch (error){
             console.log(error);
             process.exit(1);
