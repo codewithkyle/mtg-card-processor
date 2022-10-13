@@ -2,7 +2,7 @@ const yargs = require('yargs/yargs')
 const { hideBin } = require('yargs/helpers')
 const argv = yargs(hideBin(process.argv)).argv
 
-let phase = argv?.p || argv?.phase || null;
+let phase = argv?.p || argv?.phase || 1;
 switch (phase){
     case 1:
         require("./phases/phase-1")();
@@ -17,6 +17,6 @@ switch (phase){
         require("./phases/phase-4")();
         break;
     default:
-        console.log("⚠️  No phase variable provided. Use the -p or --phase flag to run other phases. ⚠️");
+        console.log("⚠️  Invalid phase variable provided. Use the -p or --phase flag as 1 - 4. ⚠️");
         break;
 }
