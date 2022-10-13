@@ -2,7 +2,7 @@ const yargs = require('yargs/yargs')
 const { hideBin } = require('yargs/helpers')
 const argv = yargs(hideBin(process.argv)).argv
 
-let phase = argv?.p || argv?.phase || 1;
+let phase = argv?.p || argv?.phase || null;
 switch (phase){
     case 1:
         require("./phases/phase-1")();
