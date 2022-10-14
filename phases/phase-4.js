@@ -43,7 +43,7 @@ async function write(dir) {
     delete card.dir;
     delete card.fsFriendlyName;
 
-    wStream.write(`${JSON.stringify(card)}\n`);
+    wStream.write(`\n${JSON.stringify(card)}`);
     if (wStream.writableNeedDrain){
         await waitDrain();
     }
