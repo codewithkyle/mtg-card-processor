@@ -17,7 +17,7 @@ module.exports = async () => {
     bar.start(cards.length, 0);
     for (const dir of cards){
         try {
-            const data = await (await fs.promises.readFile(path.join(dir, "card.json"))).toString();
+            const data = (await fs.promises.readFile(path.join(dir, "card.json"))).toString();
             const card = JSON.parse(data);
             if (card.front && !fs.existsSync(path.join(dir, "front.png"))){
                 await delay();
