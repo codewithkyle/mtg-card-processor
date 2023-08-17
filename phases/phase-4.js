@@ -7,7 +7,7 @@ const cwd = process.cwd();
 const cardsDir = path.join(cwd, "cards");
 
 const { getDirectories } = require("../lib/utils");
-const { uploadImage, getImageList, uploadCardsFile } = require("../lib/upload");
+const { uploadImage } = require("../lib/upload");
 
 const outFile = path.join(cwd, "cards.jsonl");
 if (fs.existsSync(outFile)){
@@ -15,15 +15,7 @@ if (fs.existsSync(outFile)){
 }
 
 let cards;
-const wStream = fs.createWriteStream(outFile, { flags: "a" });
 const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
-let pCards;
-
-function waitDrain(){
-    return new Promise(resolve => {
-        wStream.once("drain", resolve);
-    });
-}
 
 async function write(dir) {
     const data = await fs.promises.readFile(path.join(dir, "card.json"), { encoding: "utf-8" });
@@ -39,14 +31,15 @@ async function write(dir) {
         card.back = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-back.png`;
     }
 
-    // Remove unused props
-    delete card.dir;
-    delete card.fsFriendlyName;
-
-    wStream.write(`\n${JSON.stringify(card)}`);
-    if (wStream.writableNeedDrain){
-        await waitDrain();
+    if (card.art !== null){
+        await uploadImage(card, "art.png");
+        card.art = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-art.png`;
     }
+
+    // Only needed for local processing
+    delete card.dir;
+
+    // TODO: insert / update card in database
 }
 
 module.exports = async () => {
@@ -55,20 +48,20 @@ module.exports = async () => {
     cards = await getDirectories(cardsDir);
     const errors = [];
     bar.start(cards.length, 0);
-    pCards = await getImageList();
     for (const dir of cards){
-        await write(dir);
+        try {
+            await write(dir);
+        } catch (error){
+            errors.push(error);
+        }
         bar.increment();
     }
-    wStream.end();
-    wStream.on("close", async ()=>{
-        bar.stop();
-        console.log("✔️  JSONL file has been created.");
-        await uploadCardsFile(outFile);
-        console.log("🚀 JSONL file has been uploaded.");
-        if (errors.length){
-            console.log(errors);
+    bar.stop();
+    console.log("✔️  Finished importing cards");
+    if (errors.length){
+        console.log("🚨 Errors:");
+        for (const error of errors){
+            console.log(error);
         }
-        process.exit(0);
-    });
+    }
 }

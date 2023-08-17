@@ -16,13 +16,16 @@ module.exports = async () => {
     bar.start(cards.length, 0);
     for (const dir of cards){
         try {
-            const data = await (await fs.promises.readFile(path.join(dir, "card.json"))).toString();
+            const data = (await fs.promises.readFile(path.join(dir, "card.json"))).toString();
             const card = JSON.parse(data);
             if (!fs.existsSync(path.join(dir, "front.png"))){
                 console.log(`⚠️  ${card.name} is missing the front image`);
             }
             if (card.back !== null && !fs.existsSync(path.join(dir, "back.png"))){
                 console.log(`⚠️  ${card.name} is missing the back image`);
+            }
+            if (card.art !== null && !fs.existsSync(path.join(dir, "art.png"))){
+                console.log(`⚠️  ${card.name} is missing the art image`);
             }
         } catch (error){
             console.log(`🚨 Missing card data at ${dir}`);

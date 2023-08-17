@@ -27,6 +27,10 @@ module.exports = async () => {
                 await delay();
                 await downloadImage(card.back, path.join(dir, "back.png"));
             }
+            if (card.art && !fs.existsSync(path.join(dir, "art.png"))){
+                await delay();
+                await downloadImage(card.art, path.join(dir, "art.png"));
+            }
         } catch (error){
             console.log(`🚨 Failed to open card at ${dir}`);
         }
