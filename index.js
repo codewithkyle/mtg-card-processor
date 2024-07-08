@@ -16,7 +16,10 @@ switch (phase){
     case 4:
         require("./phases/phase-4")();
         break;
+    case 5:
+        require("./phases/phase-5")();
+        break;
     default:
-        console.log("⚠️  Invalid phase variable provided. Use the -p or --phase flag as 1 - 4. ⚠️");
+        console.log("⚠️  Invalid phase variable provided. Use the -p or --phase flag as 1-5. ⚠️");
         break;
 }
