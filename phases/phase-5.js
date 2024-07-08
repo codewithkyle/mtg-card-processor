@@ -11,28 +11,14 @@ console.log("🚀 Launching MTG Card Uploader");
 
 console.log("🔌 Connecting to database");
 const mysql = require('mysql2')
-const connection = mysql.createConnection(process.env.DATABASE_URL);
+const connection = mysql.createConnection(process.env.DSN);
 connection.connect();
-
-console.log("🔥 Destroying old data");
-connection.query("DELETE FROM Cards", (error) => { if (error) throw error; });
-connection.query("DELETE FROM Card_Colors", (error) => { if (error) throw error; });
-connection.query("DELETE FROM Card_Flavor_Text", (error) => { if (error) throw error; });
-connection.query("DELETE FROM Card_Keywords", (error) => { if (error) throw error; });
-connection.query("DELETE FROM Card_Names", (error) => { if (error) throw error; });
-connection.query("DELETE FROM Card_Subtypes", (error) => { if (error) throw error; });
-connection.query("DELETE FROM Card_Text", (error) => { if (error) throw error; });
 
 const cwd = process.cwd();
 const cardsDir = path.join(cwd, "cards");
 
 const { getDirectories } = require("../lib/utils");
 const { uploadImage } = require("../lib/upload");
-
-const outFile = path.join(cwd, "cards.jsonl");
-if (fs.existsSync(outFile)){
-    fs.unlinkSync(outFile);
-}
 
 function reportError(error, card){
     console.log("🚨 Error:");
@@ -48,24 +34,39 @@ async function write(dir) {
     const data = await fs.promises.readFile(path.join(dir, "card.json"), { encoding: "utf-8" });
     const card = JSON.parse(data);
 
+    const oldCard = await new Promise((resolve, reject) => {
+        connection.query(`SELECT HEX(id) as id FROM Cards WHERE id = UNHEX('${card.id}') AND oracle_id IS NULL`, (err, results) => {
+            if (err) reject(err);
+            resolve(results?.[0] ?? null);
+        });
+    });
+
+    if (oldCard === null) {
+        card.id = uuidv4().replace(/-/g, "");
+    }
+
     if (card.front !== null){
-        await uploadImage(card, "front.png");
-        card.front = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-front.png`;
+        await uploadImage(card, "front.webp");
+        card.front = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-front.webp`;
     }
     
     if (card.back !== null){
-        await uploadImage(card, "back.png");
-        card.back = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-back.png`;
+        await uploadImage(card, "back.webp");
+        card.back = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-back.webp`;
     }
 
     if (card.art !== null){
-        await uploadImage(card, "art.png");
-        card.art = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-art.png`;
+        await uploadImage(card, "art.webp");
+        card.art = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-art.webp`;
     }
 
-    // Insert into DB
     try {
-        insertCard(card);
+        if (oldCard === null) {
+            insertCard(card);
+        } else {
+            updateCard(card);
+        }
+        purgeTables(card);
         insertCardColors(card);
         insertCardNames(card);
         insertCardTexts(card);
@@ -74,6 +75,21 @@ async function write(dir) {
         insertCardSubtypes(card);
     } catch (error){
         reportError(error, card);
+    }
+}
+
+function purgeTables(card){
+    const tables = ["Card_Subtypes", "Card_Keywords", "Card_Flavor_Text", "Card_Text", "Card_Names", "Card_Colors"];
+    for (const table of tables){
+        connection.query(
+            `DELETE FROM ${table} WHERE card_id = UNHEX(?)`,
+            [card.id],
+            (error) => {
+                if (error) {
+                    reportError(error, card);
+                }
+            }
+        );
     }
 }
 
@@ -203,6 +219,66 @@ function insertCardColors(card){
     );
 }
 
+function updateCard(card){
+    try {
+        card.power = parseInt(card.power);
+        if (isNaN(card.power)){
+            card.power = null;
+        }
+    } catch (error){
+        card.power = null;
+    }
+    try {
+        card.toughness = parseInt(card.toughness);
+        if (isNaN(card.toughness)){
+            card.toughness = null;
+        }
+    } catch (error){
+        card.toughness = null;
+    }
+    const query = `UPDATE Cards SET oracle_id = UNHEX(?), layout = ?, front = ?, back = ?, art = ?, rarity = ?, type = ?, toughness = ?, power = ?, manaCost = ?, totalManaCost = ?, standard = ?, future = ?, historic = ?, gladiator = ?, pioneer = ?, explorer = ?, modern = ?, legacy = ?, pauper = ?, vintage = ?, penny = ?, commander = ?, oathbreaker = ?, brawl = ?, historicbrawl = ?, alchemy = ?, paupercommander = ?, duel = ?, oldschool = ?, premodern = ?, predh = ? WHERE id = UNHEX(?) AND oracle_id IS NULL`;
+    const params = [
+        card.oracle_id,
+        card.layout,
+        card.front,
+        card.back,
+        card.art,
+        rarities?.[card.rarity] ?? null,
+        card.type,
+        card.toughness,
+        card.power,
+        card.manaCost?.[0] ?? null,
+        card.totalManaCost,
+        card.legalities.standard ? 1 : 0,
+        card.legalities.future ? 1 : 0,
+        card.legalities.historic ? 1 : 0,
+        card.legalities.gladiator ? 1 : 0,
+        card.legalities.pioneer ? 1 : 0,
+        card.legalities.explorer ? 1 : 0,
+        card.legalities.modern ? 1 : 0,
+        card.legalities.legacy ? 1 : 0,
+        card.legalities.pauper ? 1 : 0,
+        card.legalities.vintage ? 1 : 0,
+        card.legalities.penny ? 1 : 0,
+        card.legalities.commander ? 1 : 0,
+        card.legalities.oathbreaker ? 1 : 0,
+        card.legalities.brawl ? 1 : 0,
+        card.legalities.historicbrawl ? 1 : 0,
+        card.legalities.alchemy ? 1 : 0,
+        card.legalities.paupercommander ? 1 : 0,
+        card.legalities.duel ? 1 : 0,,
+        card.legalities.oldschool ? 1 : 0,
+        card.legalities.premodern ? 1 : 0,
+        card.legalities.predh ? 1 : 0,
+        card.id,
+    ];
+    connection.query(query, params, (error) => {
+        if (error) {
+            reportError(error, card);
+        }
+    });
+}
+
 function insertCard(card){
     try {
         card.power = parseInt(card.power);
@@ -220,9 +296,10 @@ function insertCard(card){
     } catch (error){
         card.toughness = null;
     }
-    const query = `INSERT INTO Cards (id, layout, front, back, art, rarity, type, toughness, power, manaCost, totalManaCost, standard, future, historic, gladiator, pioneer, explorer, modern, legacy, pauper, vintage, penny, commander, oathbreaker, brawl, historicbrawl, alchemy, paupercommander, duel, oldschool, premodern, predh) VALUES (UNHEX(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const query = `INSERT INTO Cards (id, oracle_id, layout, front, back, art, rarity, type, toughness, power, manaCost, totalManaCost, standard, future, historic, gladiator, pioneer, explorer, modern, legacy, pauper, vintage, penny, commander, oathbreaker, brawl, historicbrawl, alchemy, paupercommander, duel, oldschool, premodern, predh) VALUES (UNHEX(?), UNHEX(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const params = [
         card.id,
+        card.oracle_id,
         card.layout,
         card.front,
         card.back,
@@ -263,7 +340,7 @@ function insertCard(card){
 }
 
 module.exports = async () => {
-    console.log("🚀 Inserting cards");
+    console.log("🚀 Updating cards database");
     cards = await getDirectories(cardsDir);
     const errors = [];
     bar.start(cards.length, 0);
