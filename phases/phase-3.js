@@ -18,12 +18,29 @@ module.exports = async () => {
         try {
             const data = (await fs.promises.readFile(path.join(dir, "card.json"))).toString();
             const card = JSON.parse(data);
-            if (!fs.existsSync(path.join(dir, "front.png"))){
-                console.log(`⚠️  ${card.name} is missing the front image`);
+
+            let frontImages = (await fs.promises.readFile(path.join(dir, "front-images"), { encoding: "utf8" }));
+            frontImages = frontImages.split("\n");
+            for (const img of frontImages) {
+                if (!img.length) continue;
+                const [date, url] = img.split("|");
+                if (!fs.existsSync(path.join(dir, `${date}-front.png`))){
+                    console.log(`⚠️  ${card.name} #${date} is missing the front image`);
+                }
             }
-            if (card.back !== null && !fs.existsSync(path.join(dir, "back.png"))){
-                console.log(`⚠️  ${card.name} is missing the back image`);
+
+            if (card.back) {
+                let backImages = (await fs.promises.readFile(path.join(dir, "back-images"), { encoding: "utf8" }));
+                backImages = backImages.split("\n");
+                for (const img of backImages) {
+                    if (!img.length) continue;
+                    const [date, url] = img.split("|");
+                    if (!fs.existsSync(path.join(dir, `${date}-back.png`))){
+                        console.log(`⚠️  ${card.name} #${date} is missing the back image`);
+                    }
+                }
             }
+
             if (card.art !== null && !fs.existsSync(path.join(dir, "art.png"))){
                 console.log(`⚠️  ${card.name} is missing the art image`);
             }

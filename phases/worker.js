@@ -1,48 +1,28 @@
 const fs = require("fs");
 const path = require("path");
-const cliProgress = require('cli-progress');
-var clear = require('clear');
-require('dotenv').config();
+const { parentPort, workerData } = require("worker_threads");
+const mysql = require('mysql2/promise');
 const { v4: uuidv4 } = require('uuid');
 const { colors, rarities } = require("../lib/constants");
-
-clear();
-console.log("🚀 Launching MTG Card Uploader");
-
-console.log("🔌 Connecting to database");
-const mysql = require('mysql2')
-const connection = mysql.createConnection(process.env.DSN);
-connection.connect();
-
-const cwd = process.cwd();
-const cardsDir = path.join(cwd, "cards");
-
-const { getDirectories } = require("../lib/utils");
 const { uploadImage, deleteImage } = require("../lib/upload");
 
-function reportError(error, card){
-    console.log("🚨 Error:");
-    console.log(error);
-    console.log(card);
-    process.exit(1);
-}
+const MAX_RETRIES = 100;
+const RETRY_DELAY = 1000; // milliseconds
 
-let cards;
-let totalCards;
-const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
+let connection
+mysql.createConnection(workerData.DSN).then((conn)=>{
+    connection = conn;
+    parentPort.postMessage({
+        type: "READY",
+    });
+});
 
 async function write(dir) {
     const data = await fs.promises.readFile(path.join(dir, "card.json"), { encoding: "utf-8" });
     const card = JSON.parse(data);
 
-    const oldCard = await new Promise((resolve, reject) => {
-        connection.query(`SELECT name, HEX(id) as id, HEX(oracle_id) as oracleId FROM Cards WHERE oracle_id = UNHEX('${card.oracleId.replace(/-/g, "")}')`, (err, results) => {
-            if (err) reject(err);
-            resolve(results?.[0] ?? null);
-        });
-    });
+    const oldCard = (await connection.query(`SELECT name, HEX(id) as id, HEX(oracle_id) as oracleId FROM Cards WHERE oracle_id = UNHEX('${card.oracleId.replace(/-/g, "")}')`))?.[0]?.[0] ?? null;
     if (oldCard === null) {
-        console.log("new card!?!?");
         card.id = uuidv4().replace(/-/g, "");
     } else {
         card.id = oldCard.id;
@@ -55,7 +35,7 @@ async function write(dir) {
         const [date, url] = img.split("|");
         const file = `${date}-front.png`;
         const frontImg = `${date.replace(/-/g, "")}-front.png`;
-        await uploadImage(card, frontImg, file);
+        uploadImage(card, frontImg, file);
     }
 
     if (card.back) {
@@ -66,7 +46,7 @@ async function write(dir) {
             const [date, url] = img.split("|");
             const file = `${date}-back.png`;
             const backImg = `${date.replace(/-/g, "")}-back.png`;
-            await uploadImage(card, backImg, file);
+            uploadImage(card, backImg, file);
         }
     }
 
@@ -77,50 +57,39 @@ async function write(dir) {
     }
 
     if (card.art !== null){
-        await uploadImage(card, "art.png", "art.png");
+        uploadImage(card, "art.png", "art.png");
         card.art = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-art.png`;
     }
 
-    try {
-        if (oldCard === null) {
-            insertCard(card);
-        } else {
-            updateCard(card);
-        }
-        purgeTables(card);
-        insertCardColors(card);
-        insertCardNames(card);
-        insertCardTexts(card);
-        insertCardFlavorTexts(card);
-        insertCardKeywords(card);
-        insertCardSubtypes(card);
-        insertCardPrints(card, frontImages);
-
-        // Temp
-        await deleteImage(card, "front.webp");
-        await deleteImage(card, "back.webp");
-        await deleteImage(card, "art.webp");
-    } catch (error){
-        reportError(error, card);
+    if (oldCard === null) {
+        await insertCard(card);
+    } else {
+        await updateCard(card);
     }
+    await purgeTables(card);
+    await insertCardColors(card);
+    await insertCardNames(card);
+    await insertCardTexts(card);
+    await insertCardFlavorTexts(card);
+    await insertCardKeywords(card);
+    await insertCardSubtypes(card);
+    await insertCardPrints(card, frontImages);
+
+    // Temp
+    deleteImage(card, "front.webp");
+    deleteImage(card, "back.webp");
+    deleteImage(card, "art.webp");
 }
 
-function purgeTables(card){
+async function purgeTables(card){
     const tables = ["Card_Subtypes", "Card_Keywords", "Card_Flavor_Text", "Card_Texts", "Card_Names", "Card_Colors", "Card_Prints"];
     for (const table of tables){
-        connection.query(
-            `DELETE FROM ${table} WHERE card_id = UNHEX(?)`,
-            [card.id],
-            (error) => {
-                if (error) {
-                    reportError(error, card);
-                }
-            }
-        );
+        const query = `DELETE FROM ${table} WHERE card_id = UNHEX(?)`;
+        await executeTransaction(query, [card.id]);
     }
 }
 
-function insertCardPrints(card, images){
+async function insertCardPrints(card, images){
     if (!images.length){
         return;
     }
@@ -132,18 +101,11 @@ function insertCardPrints(card, images){
         values.push(uuidv4().replace(/-/g, ""), card.id, +date.replace(/-/g, ""));
         querySegments.push("(UNHEX(?), UNHEX(?), ?)");
     }
-    connection.query(
-        `INSERT INTO Card_Prints (id, card_id, released) VALUES ${querySegments.join(", ")}`,
-        values, 
-        (error) => {
-            if (error) {
-                reportError(error, card);
-            }
-        }
-    );
+    const query = `INSERT INTO Card_Prints (id, card_id, released) VALUES ${querySegments.join(", ")}`;
+    await executeTransaction(query, values);
 }
 
-function insertCardSubtypes(card){
+async function insertCardSubtypes(card){
     if (!card.subtypes.length){
         return;
     }
@@ -153,18 +115,11 @@ function insertCardSubtypes(card){
         values.push(uuidv4().replace(/-/g, ""), card.id, subtype);
         querySegments.push("(UNHEX(?), UNHEX(?), ?)");
     }
-    connection.query(
-        `INSERT INTO Card_Subtypes (id, card_id, subtype) VALUES ${querySegments.join(", ")}`,
-        values, 
-        (error) => {
-            if (error) {
-                reportError(error, card);
-            }
-        }
-    );
+    const query = `INSERT INTO Card_Subtypes (id, card_id, subtype) VALUES ${querySegments.join(", ")}`;
+    await executeTransaction(query, values);
 }
 
-function insertCardKeywords(card){
+async function insertCardKeywords(card){
     if (!card.keywords.length){
         return;
     }
@@ -174,18 +129,11 @@ function insertCardKeywords(card){
         values.push(uuidv4().replace(/-/g, ""), card.id, keyword);
         querySegments.push("(UNHEX(?), UNHEX(?), ?)");
     }
-    connection.query(
-        `INSERT INTO Card_Keywords (id, card_id, keyword) VALUES ${querySegments.join(", ")}`,
-        values, 
-        (error) => {
-            if (error) {
-                reportError(error, card);
-            }
-        }
-    );
+    const query = `INSERT INTO Card_Keywords (id, card_id, keyword) VALUES ${querySegments.join(", ")}`;
+    await executeTransaction(query, values);
 }
 
-function insertCardFlavorTexts(card){
+async function insertCardFlavorTexts(card){
     if (!card.flavorTexts.length){
         return;
     }
@@ -195,18 +143,11 @@ function insertCardFlavorTexts(card){
         values.push(uuidv4().replace(/-/g, ""), card.id, text);
         querySegments.push("(UNHEX(?), UNHEX(?), ?)");
     }
-    connection.query(
-        `INSERT INTO Card_Flavor_Text (id, card_id, text) VALUES ${querySegments.join(", ")}`,
-        values, 
-        (error) => {
-            if (error) {
-                reportError(error, card);
-            }
-        }
-    );
+    const query = `INSERT INTO Card_Flavor_Text (id, card_id, text) VALUES ${querySegments.join(", ")}`;
+    await executeTransaction(query, values);
 }
 
-function insertCardTexts(card){
+async function insertCardTexts(card){
     if (!card.texts.length){
         return;
     }
@@ -216,18 +157,11 @@ function insertCardTexts(card){
         values.push(uuidv4().replace(/-/g, ""), card.id, text);
         querySegments.push("(UNHEX(?), UNHEX(?), ?)");
     }
-    connection.query(
-        `INSERT INTO Card_Texts (id, card_id, text) VALUES ${querySegments.join(", ")}`,
-        values, 
-        (error) => {
-            if (error) {
-                reportError(error, card);
-            }
-        }
-    );
+    const query = `INSERT INTO Card_Texts (id, card_id, text) VALUES ${querySegments.join(", ")}`;
+    await executeTransaction(query, values);
 }
 
-function insertCardNames(card){
+async function insertCardNames(card){
     if (!card.faceNames.length){
         return;
     }
@@ -237,18 +171,11 @@ function insertCardNames(card){
         values.push(uuidv4().replace(/-/g, ""), card.id, name);
         querySegments.push("(UNHEX(?), UNHEX(?), ?)");
     }
-    connection.query(
-        `INSERT INTO Card_Names (id, card_id, name) VALUES ${querySegments.join(", ")}`,
-        values, 
-        (error) => {
-            if (error) {
-                reportError(error, card);
-            }
-        }
-    );
+    const query = `INSERT INTO Card_Names (id, card_id, name) VALUES ${querySegments.join(", ")}`;
+    await executeTransaction(query, values);
 }
 
-function insertCardColors(card){
+async function insertCardColors(card){
     if (!card.colors.length){
         return;
     }
@@ -258,18 +185,11 @@ function insertCardColors(card){
         values.push(uuidv4().replace(/-/g, ""), card.id, colors[color]);
         querySegments.push("(UNHEX(?), UNHEX(?), ?)");
     }
-    connection.query(
-        `INSERT INTO Card_Colors (id, card_id, color_id) VALUES ${querySegments.join(", ")}`,
-        values, 
-        (error) => {
-            if (error) {
-                reportError(error, card);
-            }
-        }
-    );
+    const query = `INSERT INTO Card_Colors (id, card_id, color_id) VALUES ${querySegments.join(", ")}`;
+    await executeTransaction(query, values);
 }
 
-function updateCard(card){
+async function updateCard(card){
     try {
         card.power = parseInt(card.power);
         if (isNaN(card.power)){
@@ -321,15 +241,10 @@ function updateCard(card){
         card.legalities?.predh ? 1 : 0,
         card.id,
     ];
-    connection.query(query, params, (error) => {
-        if (error) {
-            console.log(error);
-            reportError(error, card);
-        }
-    });
+    await executeTransaction(query, params);
 }
 
-function insertCard(card){
+async function insertCard(card){
     try {
         card.power = parseInt(card.power);
         if (isNaN(card.power)){
@@ -383,34 +298,44 @@ function insertCard(card){
         card.legalities.premodern ? 1 : 0,
         card.legalities.predh ? 1 : 0,
     ];
-    connection.query(query, params, (error) => {
-        if (error) {
-            reportError(error, card);
-        }
-    });
+    await executeTransaction(query, params);
 }
 
-module.exports = async () => {
-    console.log("🚀 Updating cards database");
-    cards = await getDirectories(cardsDir);
-    totalCards = cards.length;
-    const errors = [];
-    bar.start(cards.length, 0);
-    for (const dir of cards){
+async function executeTransaction(query, values) {
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
-            await write(dir);
-        } catch (error){
-            console.error("Error: ", error);
-            errors.push(error);
-        }
-        bar.increment();
-    }
-    bar.stop();
-    console.log("✔️  Finished importing cards");
-    if (errors.length){
-        console.log("🚨 Errors:");
-        for (const error of errors){
-            console.log(error);
+            await connection.beginTransaction();
+            await connection.query(query, values);
+            await connection.commit();
+            break; // exit loop if successful
+        } catch (error) {
+            if (error.sqlState === '40001') { // Deadlock detected
+                await connection.rollback();
+                if (attempt < MAX_RETRIES - 1) {
+                    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (2 ** attempt))); // exponential backoff
+                } else {
+                    throw new Error('Transaction failed after maximum retries');
+                }
+            } else {
+                await connection.rollback();
+                throw error;
+            }
         }
     }
 }
+
+parentPort.addListener("message", async (dir) => {
+    try{
+        await write(dir);
+        parentPort.postMessage({
+            type: "NEXT",
+        });
+    } catch (e) {
+        parentPort.postMessage({
+            type: "ERROR",
+            data: e,
+        });
+    }
+});
+
+

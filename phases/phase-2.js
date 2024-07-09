@@ -19,14 +19,31 @@ module.exports = async () => {
         try {
             const data = (await fs.promises.readFile(path.join(dir, "card.json"))).toString();
             const card = JSON.parse(data);
-            if (card.front && !fs.existsSync(path.join(dir, "front.png"))){
-                await delay();
-                await downloadImage(card.front, path.join(dir, "front.png"));
+
+            let frontImages = (await fs.promises.readFile(path.join(dir, "front-images"), { encoding: "utf8" }));
+            frontImages = frontImages.split("\n");
+            for (const img of frontImages) {
+                if (!img.length) continue;
+                const [date, url] = img.split("|");
+                if (!fs.existsSync(path.join(dir, `${date}-front.png`))){
+                    await delay();
+                    await downloadImage(url, path.join(dir, `${date}-front.png`));
+                }
             }
-            if (card.back && !fs.existsSync(path.join(dir, "back.png"))){
-                await delay();
-                await downloadImage(card.back, path.join(dir, "back.png"));
+
+            if (card.back) {
+                let backImages = (await fs.promises.readFile(path.join(dir, "back-images"), { encoding: "utf8" }));
+                backImages = backImages.split("\n");
+                for (const img of backImages) {
+                    if (!img.length) continue;
+                    const [date, url] = img.split("|");
+                    if (!fs.existsSync(path.join(dir, `${date}-back.png`))){
+                        await delay();
+                        await downloadImage(url, path.join(dir, `${date}-back.png`));
+                    }
+                }
             }
+
             if (card.art && !fs.existsSync(path.join(dir, "art.png"))){
                 await delay();
                 await downloadImage(card.art, path.join(dir, "art.png"));

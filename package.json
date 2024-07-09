@@ -10,6 +10,7 @@
     "stream-chain": "^2.2.4",
     "stream-json": "^1.7.3",
     "uuid": "^9.0.0",
+    "webcpu": "^0.4.8",
     "yargs": "^16.2.0"
   }
 }
