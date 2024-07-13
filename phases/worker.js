@@ -21,34 +21,42 @@ async function write(dir) {
     const data = await fs.promises.readFile(path.join(dir, "card.json"), { encoding: "utf-8" });
     const card = JSON.parse(data);
 
-    const oldCard = (await connection.query(`SELECT name, HEX(id) as id, HEX(oracle_id) as oracleId FROM Cards WHERE oracle_id = UNHEX('${card.oracleId.replace(/-/g, "")}')`))?.[0]?.[0] ?? null;
+    const results = (await connection.query(`SELECT name, HEX(id) as id, HEX(oracle_id) as oracleId FROM Cards WHERE oracle_id = UNHEX('${card.oracleId.replace(/-/g, "")}')`))?.[0] ?? null;
+    if (results?.length > 1) {
+        let cardsToDelete = [];
+        for (let i = 1; i < results.length; i++){
+            cardsToDelete.push(`UNHEX('${results[i].id}')`);
+        }
+        await executeTransaction(`DELETE FROM Cards WHERE id IN (${cardsToDelete.join(", ")})`);
+    }
+    const oldCard = results?.[0] ?? null;
     if (oldCard === null) {
         card.id = uuidv4().replace(/-/g, "");
     } else {
         card.id = oldCard.id;
     }
 
-    let frontImages = (await fs.promises.readFile(path.join(dir, "front-images"), { encoding: "utf8" }));
-    frontImages = frontImages.split("\n");
-    for (const img of frontImages) {
-        if (!img.length) continue;
-        const [date, url] = img.split("|");
-        const file = `${date}-front.png`;
-        const frontImg = `${date.replace(/-/g, "")}-front.png`;
-        uploadImage(card, frontImg, file);
-    }
+    //let frontImages = (await fs.promises.readFile(path.join(dir, "front-images"), { encoding: "utf8" }));
+    //frontImages = frontImages.split("\n");
+    //for (const img of frontImages) {
+        //if (!img.length) continue;
+        //const [date, url] = img.split("|");
+        //const file = `${date}-front.png`;
+        //const frontImg = `${date.replace(/-/g, "")}-front.png`;
+        //uploadImage(card, frontImg, file);
+    //}
 
-    if (card.back) {
-        let backImages = (await fs.promises.readFile(path.join(dir, "back-images"), { encoding: "utf8" }));
-        backImages = backImages.split("\n");
-        for (const img of backImages) {
-            if (!img.length) continue;
-            const [date, url] = img.split("|");
-            const file = `${date}-back.png`;
-            const backImg = `${date.replace(/-/g, "")}-back.png`;
-            uploadImage(card, backImg, file);
-        }
-    }
+    //if (card.back) {
+        //let backImages = (await fs.promises.readFile(path.join(dir, "back-images"), { encoding: "utf8" }));
+        //backImages = backImages.split("\n");
+        //for (const img of backImages) {
+            //if (!img.length) continue;
+            //const [date, url] = img.split("|");
+            //const file = `${date}-back.png`;
+            //const backImg = `${date.replace(/-/g, "")}-back.png`;
+            //uploadImage(card, backImg, file);
+        //}
+    //}
 
     card.front = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-${card.date.replace(/-/g, "")}-front.png`;
 
@@ -57,7 +65,7 @@ async function write(dir) {
     }
 
     if (card.art !== null){
-        uploadImage(card, "art.png", "art.png");
+        //uploadImage(card, "art.png", "art.png");
         card.art = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-art.png`;
     }
 
@@ -74,11 +82,6 @@ async function write(dir) {
     await insertCardKeywords(card);
     await insertCardSubtypes(card);
     await insertCardPrints(card, frontImages);
-
-    // Temp
-    deleteImage(card, "front.webp");
-    deleteImage(card, "back.webp");
-    deleteImage(card, "art.webp");
 }
 
 async function purgeTables(card){
@@ -206,8 +209,10 @@ async function updateCard(card){
     } catch (error){
         card.toughness = null;
     }
-    const query = `UPDATE Cards SET layout = ?, front = ?, back = ?, art = ?, rarity = ?, type = ?, toughness = ?, power = ?, manaCost = ?, totalManaCost = ?, standard = ?, future = ?, historic = ?, gladiator = ?, pioneer = ?, explorer = ?, modern = ?, legacy = ?, pauper = ?, vintage = ?, penny = ?, commander = ?, oathbreaker = ?, brawl = ?, historicbrawl = ?, alchemy = ?, paupercommander = ?, duel = ?, oldschool = ?, premodern = ?, predh = ? WHERE id = UNHEX(?)`;
+    const query = `UPDATE Cards SET set_name = ?, price = ?, layout = ?, front = ?, back = ?, art = ?, rarity = ?, type = ?, toughness = ?, power = ?, manaCost = ?, totalManaCost = ?, standard = ?, future = ?, historic = ?, gladiator = ?, pioneer = ?, explorer = ?, modern = ?, legacy = ?, pauper = ?, vintage = ?, penny = ?, commander = ?, oathbreaker = ?, brawl = ?, historicbrawl = ?, alchemy = ?, paupercommander = ?, duel = ?, oldschool = ?, premodern = ?, predh = ? WHERE id = UNHEX(?)`;
     const params = [
+        card.set,
+        card.price,
         card.layout,
         card.front,
         card.back,
@@ -245,6 +250,8 @@ async function updateCard(card){
 }
 
 async function insertCard(card){
+    console.log(card.name, "is missing?");
+    process.exit(1);
     try {
         card.power = parseInt(card.power);
         if (isNaN(card.power)){
