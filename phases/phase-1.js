@@ -3,6 +3,7 @@ var clear = require('clear');
 const fs = require("fs");
 const StreamArray = require( 'stream-json/streamers/StreamArray');
 const {chain}  = require('stream-chain');
+const {glob} = require("glob");
 
 const cwd = process.cwd();
 const outDir = path.join(cwd, "cards");
@@ -18,8 +19,16 @@ const processCard = require("../lib/processor");
 module.exports = async () => {
 	clear();
 	console.log("🚀 Launching MTG Card Processor");
+
+        console.log("Cleaning up old files");
+        const files = await glob(["./cards/**/card.json", "./cards/**/front-images", "./cards/**/back-images"]);
+        const p = [];
+        for (const file of files) {
+            p.push(fs.promises.unlink(file));
+        }
+        await Promise.all(p);
     try{
-		console.log(`💽 Streaming card data from ${file}`);
+	console.log(`💽 Streaming card data from ${file}`);
         const pipeline = chain([
             fs.createReadStream(file),
             StreamArray.withParser({ objectMode: true }),
