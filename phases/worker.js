@@ -22,13 +22,6 @@ async function write(dir) {
     const card = JSON.parse(data);
 
     const results = (await connection.query(`SELECT name, HEX(id) as id, HEX(oracle_id) as oracleId FROM Cards WHERE oracle_id = UNHEX('${card.oracleId.replace(/-/g, "")}')`))?.[0] ?? null;
-    if (results?.length > 1) {
-        let cardsToDelete = [];
-        for (let i = 1; i < results.length; i++){
-            cardsToDelete.push(`UNHEX('${results[i].id}')`);
-        }
-        await executeTransaction(`DELETE FROM Cards WHERE id IN (${cardsToDelete.join(", ")})`);
-    }
     const oldCard = results?.[0] ?? null;
     if (oldCard === null) {
         card.id = uuidv4().replace(/-/g, "");
@@ -74,14 +67,14 @@ async function write(dir) {
     } else {
         await updateCard(card);
     }
-    await purgeTables(card);
-    await insertCardColors(card);
-    await insertCardNames(card);
-    await insertCardTexts(card);
-    await insertCardFlavorTexts(card);
-    await insertCardKeywords(card);
-    await insertCardSubtypes(card);
-    await insertCardPrints(card, frontImages);
+    //await purgeTables(card);
+    //await insertCardColors(card);
+    //await insertCardNames(card);
+    //await insertCardTexts(card);
+    //await insertCardFlavorTexts(card);
+    //await insertCardKeywords(card);
+    //await insertCardSubtypes(card);
+    //await insertCardPrints(card, frontImages);
 }
 
 async function purgeTables(card){
@@ -209,10 +202,11 @@ async function updateCard(card){
     } catch (error){
         card.toughness = null;
     }
+    let price = card.price || card.tix || 100;
     const query = `UPDATE Cards SET set_name = ?, price = ?, layout = ?, front = ?, back = ?, art = ?, rarity = ?, type = ?, toughness = ?, power = ?, manaCost = ?, totalManaCost = ?, standard = ?, future = ?, historic = ?, gladiator = ?, pioneer = ?, explorer = ?, modern = ?, legacy = ?, pauper = ?, vintage = ?, penny = ?, commander = ?, oathbreaker = ?, brawl = ?, historicbrawl = ?, alchemy = ?, paupercommander = ?, duel = ?, oldschool = ?, premodern = ?, predh = ? WHERE id = UNHEX(?)`;
     const params = [
         card.set,
-        card.price,
+        price,
         card.layout,
         card.front,
         card.back,
