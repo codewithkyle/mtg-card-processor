@@ -29,27 +29,31 @@ async function write(dir) {
         card.id = oldCard.id;
     }
 
-    //let frontImages = (await fs.promises.readFile(path.join(dir, "front-images"), { encoding: "utf8" }));
-    //frontImages = frontImages.split("\n");
-    //for (const img of frontImages) {
-        //if (!img.length) continue;
-        //const [date, url] = img.split("|");
-        //const file = `${date}-front.png`;
-        //const frontImg = `${date.replace(/-/g, "")}-front.png`;
-        //uploadImage(card, frontImg, file);
-    //}
+    let frontImages = (await fs.promises.readFile(path.join(dir, "front-images"), { encoding: "utf8" }));
+    frontImages = frontImages.split("\n");
+    for (const img of frontImages) {
+        if (!img.length) continue;
+        const [state, date, url] = img.split("|");
+        if (state === "new") {
+            const file = `${date}-front.png`;
+            const frontImg = `${date.replace(/-/g, "")}-front.png`;
+            uploadImage(card, frontImg, file);
+        }
+    }
 
-    //if (card.back) {
-        //let backImages = (await fs.promises.readFile(path.join(dir, "back-images"), { encoding: "utf8" }));
-        //backImages = backImages.split("\n");
-        //for (const img of backImages) {
-            //if (!img.length) continue;
-            //const [date, url] = img.split("|");
-            //const file = `${date}-back.png`;
-            //const backImg = `${date.replace(/-/g, "")}-back.png`;
-            //uploadImage(card, backImg, file);
-        //}
-    //}
+    if (card.back) {
+        let backImages = (await fs.promises.readFile(path.join(dir, "back-images"), { encoding: "utf8" }));
+        backImages = backImages.split("\n");
+        for (const img of backImages) {
+            if (!img.length) continue;
+            const [state, date, url] = img.split("|");
+            if (state === "new") {
+                const file = `${date}-back.png`;
+                const backImg = `${date.replace(/-/g, "")}-back.png`;
+                uploadImage(card, backImg, file);
+            }
+        }
+    }
 
     card.front = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-${card.date.replace(/-/g, "")}-front.png`;
 
@@ -58,7 +62,7 @@ async function write(dir) {
     }
 
     if (card.art !== null){
-        //uploadImage(card, "art.png", "art.png");
+        uploadImage(card, "art.png", "art.png");
         card.art = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-art.png`;
     }
 
@@ -67,18 +71,18 @@ async function write(dir) {
     } else {
         await updateCard(card);
     }
-    //await purgeTables(card);
-    //await insertCardColors(card);
-    //await insertCardNames(card);
-    //await insertCardTexts(card);
-    //await insertCardFlavorTexts(card);
-    //await insertCardKeywords(card);
-    //await insertCardSubtypes(card);
-    //await insertCardPrints(card, frontImages);
+    await purgeTables(card);
+    await insertCardColors(card);
+    await insertCardNames(card);
+    await insertCardTexts(card);
+    await insertCardFlavorTexts(card);
+    await insertCardKeywords(card);
+    await insertCardSubtypes(card);
+    await insertCardPrints(card, frontImages);
 }
 
 async function purgeTables(card){
-    const tables = ["Card_Subtypes", "Card_Keywords", "Card_Flavor_Text", "Card_Texts", "Card_Names", "Card_Colors", "Card_Prints"];
+    const tables = ["Card_Subtypes", "Card_Keywords", "Card_Flavor_Text", "Card_Texts", "Card_Names", "Card_Colors"];
     for (const table of tables){
         const query = `DELETE FROM ${table} WHERE card_id = UNHEX(?)`;
         await executeTransaction(query, [card.id]);
@@ -86,17 +90,18 @@ async function purgeTables(card){
 }
 
 async function insertCardPrints(card, images){
-    if (!images.length){
-        return;
-    }
+    if (!images.length) return;
     const values = [];
     const querySegments = [];
     for (const img of images){
         if (!img.length) continue;
-        const [date, url] = img.split("|");
-        values.push(uuidv4().replace(/-/g, ""), card.id, +date.replace(/-/g, ""));
-        querySegments.push("(UNHEX(?), UNHEX(?), ?)");
+        const [state, date, url] = img.split("|");
+        if (state === "new") {
+            values.push(uuidv4().replace(/-/g, ""), card.id, +date.replace(/-/g, ""));
+            querySegments.push("(UNHEX(?), UNHEX(?), ?)");
+        }
     }
+    if (!querySegments.length) return;
     const query = `INSERT INTO Card_Prints (id, card_id, released) VALUES ${querySegments.join(", ")}`;
     await executeTransaction(query, values);
 }
@@ -246,8 +251,6 @@ async function updateCard(card){
 }
 
 async function insertCard(card){
-    console.log(card.name, "is missing?");
-    process.exit(1);
     try {
         card.power = parseInt(card.power);
         if (isNaN(card.power)){
@@ -264,7 +267,9 @@ async function insertCard(card){
     } catch (error){
         card.toughness = null;
     }
-    const query = `INSERT INTO Cards (id, oracle_id, name, layout, front, back, art, rarity, type, toughness, power, manaCost, totalManaCost, standard, future, historic, gladiator, pioneer, explorer, modern, legacy, pauper, vintage, penny, commander, oathbreaker, brawl, historicbrawl, alchemy, paupercommander, duel, oldschool, premodern, predh) VALUES (UNHEX(?), UNHEX(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    let price = card.price || card.tix || 100;
+    let edhRank = card.edhRank === null ? 99999 : card.edhRank;
+    const query = `INSERT INTO Cards (id, oracle_id, name, layout, front, back, art, rarity, type, toughness, power, manaCost, totalManaCost, standard, future, historic, gladiator, pioneer, explorer, modern, legacy, pauper, vintage, penny, commander, oathbreaker, brawl, historicbrawl, alchemy, paupercommander, duel, oldschool, premodern, predh, edh_rank, price, set_name) VALUES (UNHEX(?), UNHEX(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const params = [
         card.id,
         card.oracleId.replace(/-/g, ""),
@@ -300,6 +305,9 @@ async function insertCard(card){
         card.legalities.oldschool ? 1 : 0,
         card.legalities.premodern ? 1 : 0,
         card.legalities.predh ? 1 : 0,
+        edhRank,
+        price,
+        card.set,
     ];
     await executeTransaction(query, params);
 }

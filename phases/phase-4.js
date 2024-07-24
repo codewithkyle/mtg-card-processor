@@ -24,7 +24,7 @@ module.exports = async () => {
             frontImages = frontImages.split("\n");
             for (const img of frontImages) {
                 if (!img.length) continue;
-                const [date, url] = img.split("|");
+                const [state, date, url] = img.split("|");
                 const frontImg = path.join(dir, `${date}-front.png`);
                 if (fs.existsSync(frontImg)){
                     exec(`cwebp -q 80 ${frontImg} -o ${path.join(dir, `${date}-front.webp`)}`, (err, stdout, stderr)=>{
@@ -38,7 +38,7 @@ module.exports = async () => {
                 backImages = backImages.split("\n");
                 for (const img of backImages) {
                     if (!img.length) continue;
-                    const [date, url] = img.split("|");
+                    const [state, date, url] = img.split("|");
                     const backImg = path.join(dir, `${date}-back.png`);
                     if (fs.existsSync(backImg)){
                         exec(`cwebp -q 80 ${backImg} -o ${path.join(dir, `${date}-back.webp`)}`, (err, stdout, stderr)=>{
