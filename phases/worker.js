@@ -24,7 +24,7 @@ async function write(dir) {
     const results = (await connection.query(`SELECT name, HEX(id) as id, HEX(oracle_id) as oracleId FROM Cards WHERE oracle_id = UNHEX('${card.oracleId.replace(/-/g, "")}')`))?.[0] ?? null;
     const oldCard = results?.[0] ?? null;
     if (oldCard === null) {
-        card.id = uuidv4().replace(/-/g, "");
+        card.id = uuidv4().replace(/-/g, "").toUpperCase();
     } else {
         card.id = oldCard.id;
     }
@@ -37,7 +37,7 @@ async function write(dir) {
         if (state === "new") {
             const file = `${date}-front.png`;
             const frontImg = `${date.replace(/-/g, "")}-front.png`;
-            uploadImage(card, frontImg, file);
+            uploadImage(card.id, card, frontImg, file);
         }
     }
 
@@ -50,7 +50,7 @@ async function write(dir) {
             if (state === "new") {
                 const file = `${date}-back.png`;
                 const backImg = `${date.replace(/-/g, "")}-back.png`;
-                uploadImage(card, backImg, file);
+                uploadImage(card.id, card, backImg, file);
             }
         }
     }
@@ -62,8 +62,9 @@ async function write(dir) {
     }
 
     if (card.art !== null){
-        uploadImage(card, "art.png", "art.png");
-        card.art = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id}-art.png`;
+        //deleteImage(card, "art.png");
+        uploadImage(card.id.toUpperCase(), card, "art.png", "art.png");
+        card.art = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id.toUpperCase()}-art.png`;
     }
 
     if (oldCard === null) {
@@ -71,13 +72,13 @@ async function write(dir) {
     } else {
         await updateCard(card);
     }
-    await purgeTables(card);
-    await insertCardColors(card);
-    await insertCardNames(card);
-    await insertCardTexts(card);
-    await insertCardFlavorTexts(card);
-    await insertCardKeywords(card);
-    await insertCardSubtypes(card);
+    //await purgeTables(card);
+    //await insertCardColors(card);
+    //await insertCardNames(card);
+    //await insertCardTexts(card);
+    //await insertCardFlavorTexts(card);
+    //await insertCardKeywords(card);
+    //await insertCardSubtypes(card);
     await insertCardPrints(card, frontImages);
 }
 
