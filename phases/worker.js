@@ -10,7 +10,12 @@ const MAX_RETRIES = 100;
 const RETRY_DELAY = 1000; // milliseconds
 
 let connection
-mysql.createConnection(workerData.DSN).then((conn)=>{
+mysql.createConnection({
+    host: 'localhost',
+    user: 'ddadmin',
+    password: 'password',
+    database: 'divinedrop',
+}).then((conn)=>{
     connection = conn;
     parentPort.postMessage({
         type: "READY",
@@ -72,13 +77,13 @@ async function write(dir) {
     } else {
         await updateCard(card);
     }
-    //await purgeTables(card);
-    //await insertCardColors(card);
-    //await insertCardNames(card);
-    //await insertCardTexts(card);
-    //await insertCardFlavorTexts(card);
-    //await insertCardKeywords(card);
-    //await insertCardSubtypes(card);
+    await purgeTables(card);
+    await insertCardColors(card);
+    await insertCardNames(card);
+    await insertCardTexts(card);
+    await insertCardFlavorTexts(card);
+    await insertCardKeywords(card);
+    await insertCardSubtypes(card);
     await insertCardPrints(card, frontImages);
 }
 

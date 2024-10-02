@@ -12,6 +12,8 @@ const { getDirectories } = require("../lib/utils");
 const errorFile = path.join(cwd, "image-errors");
 
 module.exports = async () => {
+    console.error("not supported");
+    process.exit(1);
     clear();
     console.log("🚀 Launching MTG Card Image Converter");
     let cards = await getDirectories(cardsDir);
