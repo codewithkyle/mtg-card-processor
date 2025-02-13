@@ -24,10 +24,10 @@ module.exports = async () => {
             frontImages = frontImages.split("\n");
             for (const img of frontImages) {
                 if (!img.length) continue;
-                const [status, date, url] = img.split("|");
-                if (!fs.existsSync(path.join(dir, `${date}-front.png`))){
+                const [status, date, id, url] = img.split("|");
+                if (!fs.existsSync(path.join(dir, `${id}-front.png`))){
                     await delay();
-                    await downloadImage(url, path.join(dir, `${date}-front.png`));
+                    await downloadImage(url, path.join(dir, `${id}-front.png`));
                 }
             }
 
@@ -36,10 +36,10 @@ module.exports = async () => {
                 backImages = backImages.split("\n");
                 for (const img of backImages) {
                     if (!img.length) continue;
-                    const [status, date, url] = img.split("|");
-                    if (!fs.existsSync(path.join(dir, `${date}-back.png`))){
+                    const [status, date, id, url] = img.split("|");
+                    if (!fs.existsSync(path.join(dir, `${id}-back.png`))){
                         await delay();
-                        await downloadImage(url, path.join(dir, `${date}-back.png`));
+                        await downloadImage(url, path.join(dir, `${id}-back.png`));
                     }
                 }
             }
