@@ -50,6 +50,7 @@ module.exports = async () => {
             }
         } catch (error){
             console.log(`🚨 Failed to open card at ${dir}`);
+            console.log(error);
         }
         bar.increment();
     }

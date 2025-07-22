@@ -23,8 +23,8 @@ module.exports = async () => {
             frontImages = frontImages.split("\n");
             for (const img of frontImages) {
                 if (!img.length) continue;
-                const [state, date, url] = img.split("|");
-                if (!fs.existsSync(path.join(dir, `${date}-front.png`))){
+                const [state, date, id, url] = img.split("|");
+                if (!fs.existsSync(path.join(dir, `${id}-front.png`))){
                     console.log(`⚠️  ${card.name} #${date} is missing the front image`);
                 }
             }
@@ -34,8 +34,8 @@ module.exports = async () => {
                 backImages = backImages.split("\n");
                 for (const img of backImages) {
                     if (!img.length) continue;
-                    const [state, date, url] = img.split("|");
-                    if (!fs.existsSync(path.join(dir, `${date}-back.png`))){
+                    const [state, date, id, url] = img.split("|");
+                    if (!fs.existsSync(path.join(dir, `${id}-back.png`))){
                         console.log(`⚠️  ${card.name} #${date} is missing the back image`);
                     }
                 }
