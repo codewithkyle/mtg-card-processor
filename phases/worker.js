@@ -8,17 +8,20 @@ const { uploadImage, deleteImage } = require("../lib/upload");
 
 const MAX_RETRIES = 100;
 const RETRY_DELAY = 1000; // milliseconds
+const MAX_RETRY_DELAY = 5000; // milliseconds
 
 let connection
-mysql.createConnection({
-    host: 'localhost',
-    user: 'ddadmin',
-    password: 'password',
-    database: 'divinedrop',
-}).then((conn)=>{
+mysql.createConnection(workerData.db).then((conn)=>{
     connection = conn;
     parentPort.postMessage({
         type: "READY",
+    });
+}).catch((error)=>{
+    // Without this the parent waits forever for a READY that never arrives, so
+    // bad connection settings look like a hang instead of an error.
+    parentPort.postMessage({
+        type: "ERROR",
+        data: `Could not connect to the database: ${error.message}`,
     });
 });
 
@@ -68,7 +71,9 @@ async function write(dir) {
 
     if (card.art !== null){
         //deleteImage(card, "art.png");
-        uploadImage(card.id.toUpperCase(), card, "art.png", "art.png");
+        if (fs.existsSync(path.join(card.dir, "art.png"))){
+            uploadImage(card.id.toUpperCase(), card, "art.png", "art.png");
+        }
         card.art = `https://divinedrop.nyc3.cdn.digitaloceanspaces.com/cards/${card.id.toUpperCase()}-art.png`;
     }
 
@@ -95,19 +100,34 @@ async function purgeTables(card){
     }
 }
 
+// Card_Prints is rebuilt rather than appended to, so re-importing a card cannot
+// leave duplicate print rows behind. It is NOT part of purgeTables though: only
+// the release dates this run actually knows about are replaced. Rows for dates
+// that have since left the Scryfall data are deliberately left in place, because
+// Deck_Cards.print points at Card_Prints.released and wiping one would strand a
+// player's chosen printing.
 async function insertCardPrints(card, images){
     if (!images.length) return;
-    const values = [];
-    const querySegments = [];
+    const dates = [];
     for (const img of images){
         if (!img.length) continue;
         const [state, date, url] = img.split("|");
-        if (state === "new") {
-            values.push(uuidv4().replace(/-/g, ""), card.id, +date.replace(/-/g, ""));
-            querySegments.push("(UNHEX(?), UNHEX(?), ?)");
-        }
+        dates.push(+date.replace(/-/g, ""));
     }
-    if (!querySegments.length) return;
+    if (!dates.length) return;
+
+    // A card can have several printings on one day (showcase, borderless, promo),
+    // so duplicate dates here are legitimate and each gets its own row back.
+    const uniqueDates = [...new Set(dates)];
+    const deleteQuery = `DELETE FROM Card_Prints WHERE card_id = UNHEX(?) AND released IN (${uniqueDates.map(() => "?").join(", ")})`;
+    await executeTransaction(deleteQuery, [card.id, ...uniqueDates]);
+
+    const values = [];
+    const querySegments = [];
+    for (const date of dates){
+        values.push(uuidv4().replace(/-/g, ""), card.id, date);
+        querySegments.push("(UNHEX(?), UNHEX(?), ?)");
+    }
     const query = `INSERT INTO Card_Prints (id, card_id, released) VALUES ${querySegments.join(", ")}`;
     await executeTransaction(query, values);
 }
@@ -329,7 +349,11 @@ async function executeTransaction(query, values) {
             if (error.sqlState === '40001') { // Deadlock detected
                 await connection.rollback();
                 if (attempt < MAX_RETRIES - 1) {
-                    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (2 ** attempt))); // exponential backoff
+                    // Capped on purpose: uncapped, 2**attempt reaches a 12 day
+                    // sleep by the twentieth retry, which does not look like a
+                    // deadlock storm - it looks like the program has frozen.
+                    const backoff = Math.min(RETRY_DELAY * (2 ** attempt), MAX_RETRY_DELAY);
+                    await new Promise(resolve => setTimeout(resolve, backoff));
                 } else {
                     throw new Error('Transaction failed after maximum retries');
                 }

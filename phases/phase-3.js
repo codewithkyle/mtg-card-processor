@@ -7,10 +7,12 @@ const cwd = process.cwd();
 const cardsDir = path.join(cwd, "cards");
 
 const { getDirectories } = require("../lib/utils");
+const { loadSpacesIndex, artKey } = require("../lib/spaces");
 
 module.exports = async () => {
     clear();
     console.log("🚀 Launching MTG Card Validator");
+    const spaces = await loadSpacesIndex();
     let cards = await getDirectories(cardsDir);
     const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
     bar.start(cards.length, 0);
@@ -23,8 +25,9 @@ module.exports = async () => {
             frontImages = frontImages.split("\n");
             for (const img of frontImages) {
                 if (!img.length) continue;
-                const [state, date, id, url] = img.split("|");
-                if (!fs.existsSync(path.join(dir, `${id}-front.png`))){
+                const [state, date, url] = img.split("|");
+                if (state === "old") continue;
+                if (!fs.existsSync(path.join(dir, `${date}-front.png`))){
                     console.log(`⚠️  ${card.name} #${date} is missing the front image`);
                 }
             }
@@ -34,14 +37,15 @@ module.exports = async () => {
                 backImages = backImages.split("\n");
                 for (const img of backImages) {
                     if (!img.length) continue;
-                    const [state, date, id, url] = img.split("|");
-                    if (!fs.existsSync(path.join(dir, `${id}-back.png`))){
+                    const [state, date, url] = img.split("|");
+                    if (state === "old") continue;
+                    if (!fs.existsSync(path.join(dir, `${date}-back.png`))){
                         console.log(`⚠️  ${card.name} #${date} is missing the back image`);
                     }
                 }
             }
 
-            if (card.art !== null && !fs.existsSync(path.join(dir, "art.png"))){
+            if (card.art !== null && !spaces.has(artKey(card)) && !fs.existsSync(path.join(dir, "art.png"))){
                 console.log(`⚠️  ${card.name} is missing the art image`);
             }
         } catch (error){

@@ -4,6 +4,8 @@ database.sql
 .env
 .editorconfig
 data.json
+data.jsonl
+spaces-keys.txt
 cards.jsonl
 divinedrop.sql
 divinedrop-backup.sql

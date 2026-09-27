@@ -8,7 +8,7 @@ switch (phase){
         require("./phases/phase-1")();
         break;
     case 2:
-        require("./phases/phase-2")();
+        require("./phases/phase-2")(argv?.refresh ?? false);
         break;
     case 3:
         require("./phases/phase-3")();

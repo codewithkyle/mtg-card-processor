@@ -1,13 +1,13 @@
 const path = require("path");
 var clear = require('clear');
 const fs = require("fs");
-const StreamArray = require( 'stream-json/streamers/StreamArray');
+const { parser } = require('stream-json/jsonl/Parser');
 const {chain}  = require('stream-chain');
 const {glob} = require("glob");
 
 const cwd = process.cwd();
 const outDir = path.join(cwd, "cards");
-const file = path.join(process.cwd(), "data.json");
+const file = path.join(process.cwd(), "data.jsonl");
 if (!fs.existsSync(file)){
     console.log(`Missing file at ${file}`);
     process.exit(1);
@@ -31,7 +31,7 @@ module.exports = async () => {
 	console.log(`💽 Streaming card data from ${file}`);
         const pipeline = chain([
             fs.createReadStream(file),
-            StreamArray.withParser({ objectMode: true }),
+            parser(),
         ]);
         console.log(`🤖 Starting to process the card data`);
         let cardCount = 0;

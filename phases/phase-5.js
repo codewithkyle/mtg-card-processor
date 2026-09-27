@@ -12,12 +12,39 @@ console.log("🚀 Launching MTG Card Uploader");
 const cwd = process.cwd();
 const cardsDir = path.join(cwd, "cards");
 
-const dsn = process.env.DSN;
+// Connection settings come from the environment so the same code can be aimed
+// at the local test database (./local-db.sh) or at production. DSN wins when it
+// is set; otherwise the individual pieces do, and they default to what the
+// local script provisions.
+const db = process.env.DSN || {
+    host: process.env.DB_HOST || "localhost",
+    port: Number(process.env.DB_PORT || 3306),
+    user: process.env.DB_USER || "ddadmin",
+    password: process.env.DB_PASSWORD || "password",
+    database: process.env.DB_NAME || "divinedrop",
+};
+
+// Never print the password, but do say which server is about to be written to.
+function describe(target){
+    if (typeof target === "string"){
+        return target.replace(/\/\/[^:@/]*:[^@/]*@/, "//***:***@");
+    }
+    return `${target.user}@${target.host}:${target.port}/${target.database}`;
+}
 
 module.exports = async () => { 
+    console.log(`🗄️  Database: ${describe(db)}`);
     const errors = [];
+    const cards = await getDirectories(cardsDir);
+    if (!cards.length){
+        console.log("⚠️  No cards found, run phase 1 first");
+        return;
+    }
     const { reportedCores, estimatedIdleCores, estimatedPhysicalCores } = await WebCPU.detectCPU();
-    let TOTAL_WORKER_COUNT = estimatedIdleCores;
+    // Never spawn more workers than there are cards to hand out. A worker primed
+    // with an undefined directory throws, and a worker that is never primed never
+    // reports back, which stalls the run waiting on a NEXT that cannot come.
+    let TOTAL_WORKER_COUNT = Math.min(estimatedIdleCores, cards.length);
     const workerPool = [];
 
     await new Promise(async (resolveGenerator) => {
@@ -29,7 +56,7 @@ module.exports = async () => {
             workerPromises.push(new Promise((resolveWorker) => {
                 const worker = new Worker(path.join(__dirname, "worker.js"), {
                     workerData: {
-                        DSN: dsn,
+                        db,
                     },
                 });
                 worker.on('message', ({ type, data }) => {
@@ -41,9 +68,13 @@ module.exports = async () => {
                             console.log(data);
                             process.exit(1);
                         case "NEXT":
+                            // A card just finished. Count completions here, not
+                            // dispatches: the cards handed out to prime the pool
+                            // never pass through the branch below, so counting
+                            // dispatches left the bar short by the worker count.
+                            bar.increment();
                             if (cards.length){
                                 worker.postMessage(cards.pop());
-                                bar.increment();
                             } else {
                                 finishedWorkers++;
                                 if (finishedWorkers === workerPool.length){
@@ -65,10 +96,9 @@ module.exports = async () => {
         }
         await Promise.all(workerPromises);
         console.log("🚀 Updating cards database");
-        const cards = await getDirectories(cardsDir);
         bar.start(cards.length, 0);
-        for (let i = 0; i < workerPool.length; i++){
-            workerPool[i].postMessage(cards.pop());
+        for (const worker of workerPool){
+            worker.postMessage(cards.pop());
         }
     });
     console.log("✔️  Finished importing cards");
