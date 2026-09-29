@@ -24,7 +24,7 @@ const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 require("dotenv").config();
 
-const { importCard, resolveOrCreateId } = require("./lib/importer");
+const { importCard } = require("./lib/importer");
 
 const argv = yargs(hideBin(process.argv)).argv;
 const WORKERS = 8;
@@ -92,9 +92,7 @@ async function countLines(file){
         }
         const conn = await pool.getConnection();
         try {
-            const { id, created } = await resolveOrCreateId(conn, card.oracleId);
-            card.id = id;
-            await importCard(conn, card, card.prints, created);
+            const { created } = await importCard(conn, card, card.prints);
             stats.cards++;
             stats.prints += card.prints.length;
             if (created) stats.created++;
