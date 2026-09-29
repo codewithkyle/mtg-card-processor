@@ -100,11 +100,19 @@ module.exports = async (argv = {}) => {
     const queue = await buildQueue(dirs);
 
     const pending = [];
+    const convertedEarlier = [];
     let converted = 0;
     let absent = 0;
     for (const job of queue){
         if (fs.existsSync(job.output)){
             converted++;
+            // A webp that already exists whose png is also still here. Only a
+            // run that converted without --prune leaves that pair behind, and
+            // this run would otherwise skip the job and never look at the png
+            // again - 1.46GB of them had accumulated that way.
+            if (fs.existsSync(job.input)){
+                convertedEarlier.push(job.input);
+            }
         } else if (!fs.existsSync(job.input)){
             // Phase 3 is what reports these; here it is simply nothing to do.
             absent++;
@@ -117,6 +125,23 @@ module.exports = async (argv = {}) => {
     if (absent){
         console.log(`   ⚠️  ${absent} have no png yet - run phase 2 first`);
     }
+
+    // Before the early return below, because "nothing to convert" is exactly the
+    // state a catalogue that has been converted without --prune ends up in, and
+    // returning there is what left the pngs sitting next to their webp.
+    let reclaimed = 0;
+    if (convertedEarlier.length){
+        if (argv.prune){
+            for (const input of convertedEarlier){
+                reclaimed += (await fs.promises.stat(input)).size;
+                await fs.promises.unlink(input);
+            }
+            console.log(`   🧹 removed ${convertedEarlier.length} png left beside a webp by an earlier run (${(reclaimed / 1073741824).toFixed(2)} GB)`);
+        } else {
+            console.log(`   💾 ${convertedEarlier.length} png sit beside a finished webp - pass --prune to reclaim them`);
+        }
+    }
+
     if (!pending.length){
         console.log("✔️  Nothing to convert");
         return;
@@ -176,7 +201,7 @@ module.exports = async (argv = {}) => {
     console.log(`   🗜️  converted: ${stats.converted}`);
     console.log(`   📉 ${(stats.pngBytes / 1073741824).toFixed(1)} GB of png became ${(stats.webpBytes / 1073741824).toFixed(1)} GB of webp`);
     if (stats.pruned){
-        console.log(`   🧹 pruned:    ${stats.pruned} png removed (--prune)`);
+        console.log(`   🧹 pruned:    ${stats.pruned} png removed as they converted (--prune)`);
     } else {
         console.log(`   💾 the png originals are kept - pass --prune to remove them as they convert`);
     }

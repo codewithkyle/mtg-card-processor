@@ -12,6 +12,8 @@ const cardsDir = path.join(cwd, "cards");
 const manifestFile = path.join(cwd, "import.jsonl");
 const uploadedFile = path.join(cwd, "uploaded");
 const errorFile = path.join(cwd, "upload-errors");
+const metaFile = path.join(cwd, "import.meta.json");
+const dataMetaFile = path.join(cwd, "data.meta.json");
 
 const WORKERS = 8;
 
@@ -27,6 +29,14 @@ const WORKERS = 8;
 // It also means nothing in the bucket depends on a database any more. Cards.id
 // is resolved per environment, so anything named after it would be uploaded
 // under one id locally and looked for under another on production.
+
+function readDataMeta(){
+    try {
+        return JSON.parse(fs.readFileSync(dataMetaFile, { encoding: "utf8" }));
+    } catch (error){
+        return null;
+    }
+}
 
 // Which objects are already in the bucket. Kept locally rather than by listing
 // R2, for the same reason phase 2 resumes from the filesystem: a local check
@@ -218,6 +228,37 @@ module.exports = async (argv = {}) => {
     await new Promise((resolve) => manifest.end(resolve));
     await new Promise((resolve) => uploadLog.end(resolve));
 
+    // Whether this file describes the whole catalogue, written down rather than
+    // left to be inferred.
+    //
+    // A card is left out when its default image is not in the bucket yet
+    // (deferred) or when reading it threw (failed), and import.js cannot tell
+    // either from a card Scryfall withdrew - both are simply absent from the
+    // manifest. Its --remove-withdrawn would then delete perfectly good cards,
+    // and the deck slots naming them, because this run was interrupted. The 5%
+    // ceiling in lib/importer.js catches a wholesale truncation; a dozen
+    // deferred cards slips under it, which is the case this file exists to stop.
+    const limited = Boolean(argv.limit || argv.card);
+    const complete = !limited && !argv["skip-upload"] && stats.deferred === 0 && stats.failed === 0;
+    const meta = {
+        generatedAt: new Date().toISOString(),
+        manifest: path.basename(manifestFile),
+        complete,
+        cards: stats.cards,
+        prints: stats.prints,
+        deferred: stats.deferred,
+        partial: stats.partial,
+        failed: stats.failed,
+        limited,
+        skippedUpload: Boolean(argv["skip-upload"]),
+        uploaded: stats.uploaded,
+        bucket: argv["skip-upload"] ? null : describeTarget(),
+        // Which Scryfall export this describes, carried through from phase 0 so
+        // the database can be told how old the catalogue it just accepted is.
+        source: readDataMeta(),
+    };
+    fs.writeFileSync(metaFile, `${JSON.stringify(meta, null, 2)}\n`);
+
     console.log("✔️  Finished uploading card images");
     console.log(`   ☁️  uploaded:   ${stats.uploaded} objects, ${(stats.bytes / 1073741824).toFixed(2)} GB`);
     if (stats.alreadyUp) console.log(`   ⏭️  already up:  ${stats.alreadyUp}`);
@@ -225,5 +266,15 @@ module.exports = async (argv = {}) => {
     if (stats.partial)  console.log(`   ⚠️  incomplete:  ${stats.partial} cards are missing some looks - run phase 4`);
     if (stats.deferred) console.log(`   ⏸️  deferred:    ${stats.deferred} cards have no default image yet`);
     if (stats.failed)   console.log(`   🚨 failed:      ${stats.failed} - see ${errorFile}`);
-    console.log(`\n   Next: node import.js --file ${path.basename(manifestFile)}`);
+
+    if (complete){
+        console.log(`   ✅ complete:    every card is in the manifest, recorded in ${path.basename(metaFile)}`);
+        console.log(`\n   Next: node import.js --file ${path.basename(manifestFile)} --prune --remove-withdrawn`);
+    } else {
+        console.log(`   ⛔ incomplete:  ${path.basename(metaFile)} says so, so import.js will refuse --remove-withdrawn`);
+        if (stats.deferred || stats.failed){
+            console.log("      Run phases 2 and 4 to fill the gaps, then phase 5 again.");
+        }
+        console.log(`\n   Next: node import.js --file ${path.basename(manifestFile)}`);
+    }
 }

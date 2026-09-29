@@ -1,4 +1,26 @@
 {
+  "name": "divinedrop-card-processor",
+  "private": true,
+  "description": "Turns the Scryfall bulk export into card images in R2 and rows in the divinedrop database.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "phase0": "node index.js --phase 0",
+    "phase1": "node index.js --phase 1",
+    "phase2": "node index.js --phase 2",
+    "phase3": "node index.js --phase 3",
+    "phase4": "node index.js --phase 4",
+    "phase5": "node index.js --phase 5",
+    "fetch": "node index.js --phase 0",
+    "process": "node index.js --phase 1",
+    "download": "node index.js --phase 2",
+    "validate": "node index.js --phase 3",
+    "convert": "node index.js --phase 4",
+    "upload": "node index.js --phase 5",
+    "import": "node import.js --file import.jsonl",
+    "import:dry": "node import.js --file import.jsonl --dry-run"
+  },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.186.0",
     "clear": "^0.1.0",

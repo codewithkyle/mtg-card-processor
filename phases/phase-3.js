@@ -5,8 +5,17 @@ var clear = require('clear');
 
 const cwd = process.cwd();
 const cardsDir = path.join(cwd, "cards");
+const metaFile = path.join(cwd, "data.meta.json");
 
 const { getDirectories } = require("../lib/utils");
+
+function readMeta(){
+    try {
+        return JSON.parse(fs.readFileSync(metaFile, { encoding: "utf8" }));
+    } catch (error){
+        return null;
+    }
+}
 
 // Everything a card is supposed to have on disk, named from its manifest. The
 // old validator asked DigitalOcean whether an image existed; this one asks the
@@ -26,9 +35,18 @@ function expectedFiles(dir, card, looks){
     return expected;
 }
 
-module.exports = async () => {
+module.exports = async (argv = {}) => {
     clear();
     console.log("🚀 Launching MTG Card Validator");
+
+    const meta = readMeta();
+    const expectedSource = meta?.updatedAt ?? null;
+    if (expectedSource){
+        console.log(`📚 Checking against the export of ${expectedSource}`);
+    }
+    if (argv.prune){
+        console.log("🧹 --prune: unreferenced images will be deleted");
+    }
 
     const dirs = await getDirectories(cardsDir);
     if (!dirs.length){
@@ -46,6 +64,11 @@ module.exports = async () => {
         orphans: 0,
         unreadable: 0,
         miscounted: 0,
+        stale: 0,
+        unstamped: 0,
+        partial: 0,
+        reclaimed: 0,
+        deleted: 0,
     };
     const complaints = [];
 
@@ -62,6 +85,19 @@ module.exports = async () => {
             stats.looks += looks.length;
             const prints = looks.reduce((total, look) => total + look.prints.length, 0);
             stats.prints += prints;
+
+            // Which export the manifest was written from. A phase 1 that died
+            // partway leaves manifests from the previous one, and nothing else
+            // would notice: phase 2 would fetch printings that no longer exist
+            // and phase 5 would put their ids in the import manifest regardless.
+            if (expectedSource){
+                if (!card.source){
+                    stats.unstamped++;
+                } else if (card.source !== expectedSource){
+                    stats.stale++;
+                    complaints.push(`🕰️  ${card.name} was written from the export of ${card.source}`);
+                }
+            }
 
             // The counts phase 1 recorded are checked rather than trusted,
             // because a manifest half written by an interrupted run would
@@ -91,16 +127,37 @@ module.exports = async () => {
             // data.jsonl these are printings that have changed treatment or
             // left the data, and they would otherwise be uploaded forever.
             for (const entry of await fs.promises.readdir(dir)){
+                const file = path.join(dir, entry);
+                // A half written download or encode. Both phases write under
+                // .part and move the file into place, so one left behind is
+                // debris from a run that was killed - never a file to keep.
+                if (entry.endsWith(".part")){
+                    stats.partial++;
+                    if (argv.prune){
+                        stats.reclaimed += (await fs.promises.stat(file)).size;
+                        await fs.promises.unlink(file);
+                        stats.deleted++;
+                    } else {
+                        complaints.push(`🧩 ${card.name} has a half written ${entry}`);
+                    }
+                    continue;
+                }
                 if (!entry.endsWith(".png") && !entry.endsWith(".webp")) continue;
                 const asPng = path.join(dir, entry.replace(/\.webp$/, ".png"));
                 if (!expected.has(asPng)){
                     stats.orphans++;
-                    complaints.push(`🧹 ${card.name} has an unreferenced ${entry}`);
+                    if (argv.prune){
+                        stats.reclaimed += (await fs.promises.stat(file)).size;
+                        await fs.promises.unlink(file);
+                        stats.deleted++;
+                    } else {
+                        complaints.push(`🧹 ${card.name} has an unreferenced ${entry}`);
+                    }
                 }
             }
         } catch (error){
             stats.unreadable++;
-            complaints.push(`🚨 Cannot read the manifest at ${dir} - ${error.message}`);
+            complaints.push(`🚨 Cannot read the manifest at ${path.basename(dir)} - ${error.message}`);
         }
         bar.increment();
     }
@@ -113,8 +170,12 @@ module.exports = async () => {
     console.log(`   💾 images on disk: ${stats.png} png, ${stats.webp} webp`);
     if (stats.missing)    console.log(`   ⚠️  missing images: ${stats.missing}`);
     if (stats.orphans)    console.log(`   🧹 unreferenced:   ${stats.orphans}`);
+    if (stats.partial)    console.log(`   🧩 half written:   ${stats.partial}`);
+    if (stats.deleted)    console.log(`   🗑️  deleted:        ${stats.deleted} files, ${(stats.reclaimed / 1073741824).toFixed(2)} GB reclaimed`);
     if (stats.miscounted) console.log(`   🚨 bad manifests:  ${stats.miscounted}`);
     if (stats.unreadable) console.log(`   🚨 unreadable:     ${stats.unreadable}`);
+    if (stats.stale)      console.log(`   🕰️  stale:          ${stats.stale} manifests are from an older export - re-run phase 1`);
+    if (stats.unstamped)  console.log(`   📋 unstamped:      ${stats.unstamped} manifests predate provenance being recorded`);
 
     // Capped because a phase 2 that was interrupted early produces tens of
     // thousands of these, and a wall of them buries the summary above.
@@ -127,5 +188,8 @@ module.exports = async () => {
     }
     if (!complaints.length){
         console.log("   ✨ Everything the manifests name is on disk");
+    }
+    if ((stats.orphans || stats.partial) && !argv.prune){
+        console.log("\n   Pass --prune to delete what nothing references.");
     }
 }

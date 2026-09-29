@@ -17,6 +17,10 @@ import-errors
 download-errors
 image-errors
 
+# provenance written beside the two big generated files
+data.meta.json
+import.meta.json
+
 # records written by the withdrawn card sweep
 withdrawn-removed.tsv
 legacy-cards.txt

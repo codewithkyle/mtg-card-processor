@@ -6,11 +6,13 @@
 #   ./deploy-import.sh --host prod.example.com --user deploy
 #   ./deploy-import.sh --host prod.example.com --user deploy --prune
 #
-# Only five files go over the wire: import.js, the two library files it needs,
-# a package.json naming its dependencies, and the gzipped manifest. The images
-# are already in R2 by the time this runs, and Decks and Sleeves are never
-# written - the whole reason this exists instead of a database dump, which would
-# carry real user rows over with it.
+# Six files go over the wire: import.js, the two library files it needs, a
+# package.json naming its dependencies, the gzipped manifest, and the
+# import.meta.json phase 5 wrote beside it - which is what tells the far side
+# whether the manifest describes every card or whether phase 5 was interrupted.
+# The images are already in R2 by the time this runs, and Decks and Sleeves are
+# never written - the whole reason this exists instead of a database dump, which
+# would carry real user rows over with it.
 #
 # Deck_Cards is the one exception, and only under --prune or --remove-withdrawn.
 # Both delete slots naming a card that does not exist, because once the card is
@@ -58,16 +60,25 @@ Options:
   --network <name>     docker network to join, default host
   --yes                do not ask before writing to the database
   --dry-run            parse and report on the server, write nothing
-  --prune              after importing, drop the pre-hash Card_Prints rows and
-                       any row hanging off a card that is not there. Removes
-                       deck slots that name a card which does not exist.
+  --prune              after importing, delete rows nothing can render: a
+                       printing with no hash, and anything hanging off a card
+                       that is not there - deck slots included.
   --remove-withdrawn   delete cards the manifest no longer names - Scryfall has
                        withdrawn them. Removes the deck slots that named them.
+                       Refused unless import.meta.json says the manifest is
+                       complete.
   --withdrawn-max-share <n>
                        override the 0.05 ceiling that refuses a sweep which
                        would remove too much of the catalogue
+  --assume-complete    treat the manifest as covering every card even though
+                       import.meta.json is missing or says otherwise. Only
+                       sensible if you know why it is short.
   --limit <n>          import only the first n cards
   -h, --help           this
+
+Both sweeps report what they would do on every run and delete only when asked,
+so an ordinary refresh shows the drift without acting on it. The whole sequence
+is written up in README.md.
 EOF
     exit 0
 }
@@ -89,6 +100,8 @@ while [ $# -gt 0 ]; do
                      PASSTHROUGH+=("--remove-withdrawn"); shift ;;
         --withdrawn-max-share)
                      PASSTHROUGH+=("--withdrawn-max-share" "$2"); shift 2 ;;
+        --assume-complete)
+                     PASSTHROUGH+=("--assume-complete"); shift ;;
         --limit)     PASSTHROUGH+=("--limit" "$2"); shift 2 ;;
         -h|--help)   usage ;;
         *)           die "unknown option $1 (try --help)" ;;
@@ -109,6 +122,36 @@ cards=$(wc -l < "$MANIFEST" | tr -d '[:space:]')
 
 say "🚀 Deploying card import to $TARGET:$DIR"
 say "   📝 $MANIFEST holds $cards cards"
+
+# What phase 5 recorded about the manifest. Read here as well as on the far side
+# so a --remove-withdrawn that is going to be refused is refused before 40MB
+# goes over the wire, and grepped rather than parsed because the server side is
+# the authority and jq is not guaranteed anywhere.
+META="${MANIFEST%.jsonl}.meta.json"
+ASSUME_COMPLETE=0
+case " ${PASSTHROUGH[*]:-} " in *" --assume-complete "*) ASSUME_COMPLETE=1 ;; esac
+if [ -f "$META" ]; then
+    if grep -q '"complete": *true' "$META"; then
+        say "   ✅ $META says it describes every card"
+    else
+        say "   ⛔ $META says the manifest is incomplete"
+        grep -E '"(deferred|failed|limited|skippedUpload)"' "$META" | sed 's/^/      /'
+    fi
+else
+    say "   ⚠️  no $META beside it - phase 5 writes that, and nothing else records what the manifest covers"
+fi
+
+case " ${PASSTHROUGH[*]:-} " in
+    *" --remove-withdrawn "*)
+        if [ "$ASSUME_COMPLETE" -ne 1 ] && ! grep -q '"complete": *true' "$META" 2>/dev/null; then
+            say ""
+            say "   --remove-withdrawn deletes cards, and the deck slots naming them, on the"
+            say "   strength of a card being absent from this manifest. Nothing here says the"
+            say "   manifest covers every card, so absent may just mean phase 5 stopped early."
+            die "re-run phase 5 until it reports the manifest complete, or pass --assume-complete"
+        fi
+        ;;
+esac
 
 "${SSH[@]}" true 2>/dev/null || die "cannot ssh to $TARGET on port $SSH_PORT"
 
@@ -164,6 +207,12 @@ mkdir -p "$STAGE/lib"
 cp import.js "$STAGE/"
 cp lib/importer.js lib/constants.js "$STAGE/lib/"
 
+# Sent under the name the remote manifest will have, since the far side derives
+# it from --file and that is always import.jsonl there.
+if [ -f "$META" ]; then
+    cp "$META" "$STAGE/import.meta.json"
+fi
+
 # Pinned to what this repo resolved, so the server installs the same versions
 # rather than whatever is newest on the day it runs.
 cat > "$STAGE/package.json" <<'EOF'
@@ -195,6 +244,13 @@ sum=$(cd "$STAGE" && sha256sum import.jsonl.gz | cut -d' ' -f1)
 say "   📤 Copying to $TARGET"
 "${SSH[@]}" "mkdir -p $DIR/lib"
 scp -P "$SSH_PORT" -q "$STAGE/import.js" "$STAGE/package.json" "$STAGE/import.jsonl.gz" "$TARGET:$DIR/"
+if [ -f "$STAGE/import.meta.json" ]; then
+    scp -P "$SSH_PORT" -q "$STAGE/import.meta.json" "$TARGET:$DIR/"
+else
+    # Removed rather than left behind: a stale one from a previous deploy would
+    # vouch for a manifest it has never seen.
+    "${SSH[@]}" "rm -f $DIR/import.meta.json"
+fi
 scp -P "$SSH_PORT" -q "$STAGE/lib/importer.js" "$STAGE/lib/constants.js" "$TARGET:$DIR/lib/"
 
 if [ -n "$ENV_FILE" ]; then

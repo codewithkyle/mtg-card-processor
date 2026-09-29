@@ -4,12 +4,23 @@
 //
 //   node import.js --file import.jsonl            apply everything
 //   node import.js --file import.jsonl --dry-run  parse and report, write nothing
-//   node import.js --file import.jsonl --prune    also drop the pre-hash rows
-//                                                 and any row hanging off a
-//                                                 card that is not there
+//   node import.js --file import.jsonl --prune    also delete rows nothing can
+//                                                 render: printings with no
+//                                                 hash, and anything hanging
+//                                                 off a card that is not there
 //   node import.js --file import.jsonl --remove-withdrawn
-//                                                 also delete cards Scryfall no
-//                                                 longer carries
+//                                                 also delete cards the
+//                                                 manifest no longer names -
+//                                                 Scryfall has withdrawn them
+//
+// Both sweeps report on every run and delete only when asked, so an ordinary
+// refresh shows the drift without acting on it.
+//
+// --remove-withdrawn needs import.meta.json beside the manifest, written by
+// phase 5, saying the manifest describes every card. Without that a run of
+// phase 5 that deferred a dozen cards is indistinguishable from Scryfall having
+// withdrawn them, and the sweep would take them out of the database and out of
+// the decks that hold them. --assume-complete overrides that deliberately.
 //
 // This is deliberately a separate program from the phases. The manifest holds
 // no Cards.id and no file paths, so the same file can be applied to a test
@@ -18,7 +29,8 @@
 // with it.
 //
 // To run it somewhere else, it needs this file, lib/importer.js,
-// lib/constants.js, the manifest, and `npm install mysql2 uuid yargs dotenv`.
+// lib/constants.js, the manifest, its import.meta.json, and
+// `npm install mysql2 uuid yargs dotenv`. deploy-import.sh ships exactly that.
 
 const fs = require("fs");
 const path = require("path");
@@ -94,6 +106,24 @@ function describe(target){
     return `${target.user}@${target.host}:${target.port}/${target.database}`;
 }
 
+function readJson(file){
+    try {
+        return JSON.parse(fs.readFileSync(file, { encoding: "utf8" }));
+    } catch (error){
+        return null;
+    }
+}
+
+// Why phase 5's own record says the manifest is short, in the words it recorded.
+function shortfall(meta){
+    const reasons = [];
+    if (meta.deferred) reasons.push(`${meta.deferred} cards have no image in the bucket yet`);
+    if (meta.failed) reasons.push(`${meta.failed} cards failed`);
+    if (meta.limited) reasons.push("it was written with --limit or --card");
+    if (meta.skippedUpload) reasons.push("it was written with --skip-upload, so no image was checked");
+    return reasons.length ? reasons.join(", ") : "phase 5 did not mark it complete";
+}
+
 // Counted up front so the progress bar can show how long this will take. The
 // file is tens of megabytes, so reading it twice costs about a second.
 async function countLines(file){
@@ -112,8 +142,25 @@ async function countLines(file){
         process.exit(1);
     }
 
+    // What phase 5 recorded about this manifest. The withdrawn sweep deletes
+    // cards, and the deck slots naming them, on the strength of a card being
+    // absent from the manifest - so "absent" has to mean withdrawn upstream and
+    // not "phase 5 never got that far", and this file is the only thing that
+    // knows the difference.
+    const metaFile = `${file.replace(/\.jsonl$/, "")}.meta.json`;
+    const manifestMeta = readJson(metaFile);
+
     console.log("🚀 Launching MTG Card Importer");
     console.log(`📝 Manifest: ${file}`);
+    if (manifestMeta){
+        const exported = manifestMeta.source?.updatedAt;
+        console.log(`   ${manifestMeta.complete ? "✅" : "⛔"} ${manifestMeta.cards} cards, written ${manifestMeta.generatedAt}${exported ? `, from the Scryfall export of ${exported}` : ""}`);
+        if (!manifestMeta.complete){
+            console.log(`   ⚠️  ${path.basename(metaFile)} says this manifest is incomplete: ${shortfall(manifestMeta)}`);
+        }
+    } else {
+        console.log(`   ⚠️  no ${path.basename(metaFile)} beside it, so nothing records what it covers`);
+    }
     console.log(`🗄️  Database: ${describe(db)}   [from ${dbSource}]${argv["dry-run"] ? "  (dry run, nothing will be written)" : ""}`);
 
     let pool;
@@ -209,13 +256,33 @@ async function countLines(file){
     // like a card Scryfall withdrew. A dry run has the whole set, so it reports
     // and never deletes.
     const truncated = stats.failed || argv.limit;
-    if (argv["remove-withdrawn"] && truncated){
-        console.log("   🚫 Refusing to remove withdrawn cards after an incomplete run");
-    } else if (!truncated){
+
+    // Every reason this run must not delete, gathered so the refusal names all
+    // of them rather than the first one found.
+    const blockers = [];
+    if (stats.failed) blockers.push(`${stats.failed} cards failed to import, so the catalogue is not what this manifest describes`);
+    if (argv.limit) blockers.push(`--limit ${argv.limit} means only part of the manifest was read`);
+    if (!argv["assume-complete"]){
+        if (!manifestMeta){
+            blockers.push(`there is no ${path.basename(metaFile)}, so nothing says the manifest covers every card`);
+        } else if (!manifestMeta.complete){
+            blockers.push(`${path.basename(metaFile)} says the manifest is incomplete - ${shortfall(manifestMeta)}`);
+        }
+    }
+
+    const mayRemoveWithdrawn = argv["remove-withdrawn"] && !blockers.length && !argv["dry-run"];
+    if (argv["remove-withdrawn"] && blockers.length){
+        console.log("   🚫 Refusing to remove withdrawn cards. This would delete deck slots, and:");
+        for (const why of blockers){
+            console.log(`      - ${why}`);
+        }
+        console.log("      Re-run phase 5 until it reports the manifest complete, or pass --assume-complete.");
+    }
+    if (!truncated){
         const conn = await pool.getConnection();
         try {
             const sweep = await pruneWithdrawn(conn, manifestOracleIds, {
-                dryRun: !argv["remove-withdrawn"] || argv["dry-run"],
+                dryRun: !mayRemoveWithdrawn,
                 maxShare: argv["withdrawn-max-share"] ? Number(argv["withdrawn-max-share"]) : undefined,
             });
             if (sweep.refused){
@@ -226,7 +293,11 @@ async function countLines(file){
                 console.log("   ✨ every card in the catalogue is still in the manifest");
             } else if (!sweep.deleted){
                 console.log(`   📌 ${sweep.withdrawn.length} cards are no longer in the manifest, across ${new Set(sweep.slots.map((s) => s.deckId)).size} decks (${sweep.slots.length} slots).`);
-                console.log(`      ${argv["dry-run"] ? "Nothing was removed: this is a dry run." : "Pass --remove-withdrawn to delete them."}`);
+                if (argv["dry-run"]){
+                    console.log("      Nothing was removed: this is a dry run.");
+                } else if (!argv["remove-withdrawn"]){
+                    console.log("      Pass --remove-withdrawn to delete them.");
+                }
             } else {
                 // Written before the summary because it is the only record that
                 // a given deck ever held a given card.
@@ -247,31 +318,38 @@ async function countLines(file){
         }
     }
 
-    // Rows written before printings carried hashes, and rows hanging off a card
-    // that no longer exists. Both are debris of the old scheme, so one flag
-    // clears both.
+    // Rows nothing can render, in two shapes.
     //
-    // The pre-hash printings have to go before the application migrates
-    // Deck_Cards.print off release dates, not after: that migration aborts on a
-    // choice whose printing still exists without a hash, and every one of these
-    // rows is exactly that. The choices worth resolving resolve against the
-    // hashed rows this import wrote.
-    if (argv.prune && (stats.failed || argv.limit || argv["dry-run"])){
-        console.log("   🚫 Refusing to prune after an incomplete run");
-    } else {
+    // A printing with no front_hash: the application resolves a card's image
+    // from that hash, so a hashless printing is one it cannot show and a print
+    // picker cannot offer. And a row hanging off a card that is not there - the
+    // schema carries no foreign keys at all, so nothing cleans up after a card
+    // that goes away and nothing stopped the row being written in the first
+    // place.
+    //
+    // Both started as migration debris and both are swept on every run now,
+    // because the schema still cannot stop them coming back. A sweep that
+    // reports nothing is how you know it has not.
+    const mayPrune = argv.prune && !stats.failed && !argv.limit && !argv["dry-run"];
+    if (argv.prune && !mayPrune){
+        console.log(`   🚫 Not pruning: ${argv["dry-run"] ? "this is a dry run" : "the run was incomplete"}. Reporting only.`);
+    }
+    {
         const conn = await pool.getConnection();
         try {
-            if (argv.prune){
+            if (mayPrune){
                 const [result] = await conn.query("DELETE FROM Card_Prints WHERE front_hash IS NULL");
-                console.log(`   🧹 pruned ${result.affectedRows} rows left over from the release date scheme`);
+                if (result.affectedRows){
+                    console.log(`   🧹 pruned ${result.affectedRows} printings with no hash, which nothing could render`);
+                }
             } else {
                 const [[left]] = await conn.query("SELECT COUNT(*) AS n FROM Card_Prints WHERE front_hash IS NULL");
                 if (left.n){
-                    console.log(`   📌 ${left.n} rows still have no hash. Prune them before migrating Deck_Cards.print.`);
+                    console.log(`   📌 ${left.n} printings have no hash and cannot be rendered.${argv.prune ? "" : " Pass --prune to remove them."}`);
                 }
             }
 
-            const orphans = await pruneOrphans(conn, { dryRun: !argv.prune });
+            const orphans = await pruneOrphans(conn, { dryRun: !mayPrune });
             const total = orphans.orphaned + orphans.nullCard;
             if (!total){
                 console.log("   ✨ nothing hanging off a card that is not there");
@@ -279,7 +357,7 @@ async function countLines(file){
                 const shape = `${orphans.orphaned} pointing at ${orphans.cardIds} cards that do not exist, ${orphans.nullCard} with no card at all`;
                 if (!orphans.deleted){
                     console.log(`   📌 ${total} orphaned rows - ${shape}.`);
-                    console.log(`      ${orphans.slots.length} of them are deck slots. Pass --prune to remove them.`);
+                    console.log(`      ${orphans.slots.length} of them are deck slots.${argv.prune ? "" : " Pass --prune to remove them."}`);
                 } else {
                     if (orphans.slots.length){
                         fs.writeFileSync(orphanFile,

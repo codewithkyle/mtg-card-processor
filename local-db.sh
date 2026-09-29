@@ -23,7 +23,7 @@ IMAGE="${DD_IMAGE:-mysql:8.0}"
 CONTAINER="${DD_CONTAINER:-divinedrop-mysql}"
 VOLUME="${CONTAINER}-data"
 DB="${DD_DB:-divinedrop}"
-# defaults match the credentials hardcoded in phases/worker.js
+# defaults match .env.example, which is what the phases and import.js read
 USER="${DD_USER:-ddadmin}"
 PASS="${DD_PASS:-password}"
 ROOT_PASS="${DD_ROOT_PASS:-rootpassword}"
@@ -40,7 +40,7 @@ pick_port() {
         printf '%s' "$DD_PORT"
         return
     fi
-    # 3306 is what worker.js expects, but do not fight another project for it
+    # 3306 is what .env.example expects, but do not fight another project for it
     for candidate in 3306 3307 3308 3309; do
         if port_free "$candidate"; then
             printf '%s' "$candidate"
@@ -97,7 +97,8 @@ start_container() {
     port="$(pick_port)"
     if [ "$port" != "3306" ]; then
         say "⚠️  Port 3306 is taken by something else, using $port instead."
-        say "   phases/worker.js hardcodes localhost:3306, so point it at $port before running phase 5."
+        say "   Set DB_PORT=$port in .env before running import.js, which is the only thing here"
+        say "   that talks to a database - the phases do not."
     fi
     say "🐳 Starting $IMAGE as $CONTAINER on port $port"
     docker run -d \
