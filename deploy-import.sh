@@ -8,9 +8,14 @@
 #
 # Only five files go over the wire: import.js, the two library files it needs,
 # a package.json naming its dependencies, and the gzipped manifest. The images
-# are already in R2 by the time this runs, and the manifest can only touch card
-# tables - Decks, Deck_Cards and Sleeves are not reachable from it, which is
-# the whole reason this exists instead of a database dump.
+# are already in R2 by the time this runs, and Decks and Sleeves are never
+# written - the whole reason this exists instead of a database dump, which would
+# carry real user rows over with it.
+#
+# Deck_Cards is the one exception, and only under --prune or --remove-withdrawn.
+# Both delete slots naming a card that does not exist, because once the card is
+# gone the row points at nothing: the deck comes up short rather than showing a
+# blank. The decks themselves are never deleted.
 #
 # The local .env is never shipped. It holds R2 credentials the importer has no
 # use for, and the database it names is the local one. The server keeps its own
@@ -53,7 +58,14 @@ Options:
   --network <name>     docker network to join, default host
   --yes                do not ask before writing to the database
   --dry-run            parse and report on the server, write nothing
-  --prune              after importing, drop the pre-hash Card_Prints rows
+  --prune              after importing, drop the pre-hash Card_Prints rows and
+                       any row hanging off a card that is not there. Removes
+                       deck slots that name a card which does not exist.
+  --remove-withdrawn   delete cards the manifest no longer names - Scryfall has
+                       withdrawn them. Removes the deck slots that named them.
+  --withdrawn-max-share <n>
+                       override the 0.05 ceiling that refuses a sweep which
+                       would remove too much of the catalogue
   --limit <n>          import only the first n cards
   -h, --help           this
 EOF
@@ -73,6 +85,10 @@ while [ $# -gt 0 ]; do
         --yes)       ASSUME_YES=1; shift ;;
         --dry-run)   PASSTHROUGH+=("--dry-run"); ASSUME_YES=1; shift ;;
         --prune)     PASSTHROUGH+=("--prune"); shift ;;
+        --remove-withdrawn)
+                     PASSTHROUGH+=("--remove-withdrawn"); shift ;;
+        --withdrawn-max-share)
+                     PASSTHROUGH+=("--withdrawn-max-share" "$2"); shift 2 ;;
         --limit)     PASSTHROUGH+=("--limit" "$2"); shift 2 ;;
         -h|--help)   usage ;;
         *)           die "unknown option $1 (try --help)" ;;
@@ -113,10 +129,24 @@ if [ ${#PASSTHROUGH[@]} -gt 0 ]; then
     say "   ⚙️  import flags: ${PASSTHROUGH[*]}"
 fi
 
+# Whether this run can delete deck slots, so the prompt says so instead of
+# promising that user tables are out of reach. They are, until one of these.
+TOUCHES_DECKS=0
+if [ ${#PASSTHROUGH[@]} -gt 0 ]; then
+    case " ${PASSTHROUGH[*]} " in
+        *" --prune "*|*" --remove-withdrawn "*) TOUCHES_DECKS=1 ;;
+    esac
+fi
+
 if [ "$ASSUME_YES" -ne 1 ]; then
     say ""
-    say "   This writes $cards cards to the database on $HOST."
-    say "   User tables are not reachable from the manifest, but this is not a dry run."
+    say "   This writes $cards cards to the database on $HOST. Not a dry run."
+    if [ "$TOUCHES_DECKS" -eq 1 ]; then
+        say "   WARNING: Deck_Cards slots WILL be deleted where they name a card"
+        say "   that does not exist. Decks, Sleeves and other user rows are not."
+    else
+        say "   Only card tables are written. No deck or user row is touched."
+    fi
     printf '   Continue? [y/N] '
     read -r reply
     case "$reply" in

@@ -37,13 +37,55 @@ const errorFile = path.join(process.cwd(), "import-errors");
 const withdrawnFile = path.join(process.cwd(), "withdrawn-removed.tsv");
 const orphanFile = path.join(process.cwd(), "orphans-removed.tsv");
 
-const db = process.env.DSN || {
-    host: process.env.DB_HOST || "localhost",
-    port: Number(process.env.DB_PORT || 3306),
-    user: process.env.DB_USER || "ddadmin",
-    password: process.env.DB_PASSWORD || "password",
-    database: process.env.DB_NAME || "divinedrop",
-};
+// How the database is named, in the forms the environments actually use.
+//
+// DSN is only handed to mysql2 when it is a URI, because that is the one form
+// mysql2 parses. Production sets DSN in the Go driver's own format instead -
+// user:pass@tcp(host:port)/dbname - which mysql2 accepts without complaint and
+// silently mangles: user comes out undefined, password empty, host localhost and
+// the database "assword@tcp(...)". What reaches you is "Access denied for user
+// ''", which names none of that. So the Go form is parsed here instead, and a
+// DSN in neither form is ignored out loud rather than quietly.
+function fromParts(){
+    return {
+        host: process.env.DB_HOST || "localhost",
+        port: Number(process.env.DB_PORT || 3306),
+        user: process.env.DB_USER || "ddadmin",
+        password: process.env.DB_PASSWORD || "password",
+        database: process.env.DB_NAME || "divinedrop",
+    };
+}
+
+function resolveDb(){
+    const dsn = (process.env.DSN || "").trim();
+    if (!dsn){
+        return { config: fromParts(), source: "DB_*" };
+    }
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(dsn)){
+        return { config: dsn, source: "DSN as a uri" };
+    }
+    // user:pass@tcp(host:port)/dbname?params - the net and address are optional
+    // in the Go format, and so is the credential pair.
+    const go = dsn.match(/^(?:([^:@/]*)(?::([^@]*))?@)?[a-z]*(?:\(([^)]*)\))?\/([^?]+)/i);
+    if (go){
+        const [, user, password, addr, database] = go;
+        const [host, port] = (addr || "").split(":");
+        const parts = fromParts();
+        return {
+            config: {
+                host: host || parts.host,
+                port: Number(port) || parts.port,
+                user: user || parts.user,
+                password: password ?? parts.password,
+                database: database || parts.database,
+            },
+            source: "DSN in the Go driver format",
+        };
+    }
+    return { config: fromParts(), source: "DB_* (DSN is set but in no form this understands, so it was ignored)" };
+}
+
+const { config: db, source: dbSource } = resolveDb();
 
 function describe(target){
     if (typeof target === "string"){
@@ -72,7 +114,7 @@ async function countLines(file){
 
     console.log("🚀 Launching MTG Card Importer");
     console.log(`📝 Manifest: ${file}`);
-    console.log(`🗄️  Database: ${describe(db)}${argv["dry-run"] ? "  (dry run, nothing will be written)" : ""}`);
+    console.log(`🗄️  Database: ${describe(db)}   [from ${dbSource}]${argv["dry-run"] ? "  (dry run, nothing will be written)" : ""}`);
 
     let pool;
     try {
