@@ -142,6 +142,16 @@ module.exports = async (argv = {}) => {
     const state = { lines: 0 };
     let received = 0;
 
+    // Wrapped before the progress listener is attached, and that order matters.
+    // Attaching any "data" listener puts the response in flowing mode, so a
+    // listener that only counts bytes would start the stream with nothing
+    // consuming it and drop whatever arrived before the real reader was hooked
+    // up. Today both happen in one tick and no chunk can fire between them, but
+    // that is an accident of statement order rather than a guarantee - and the
+    // symptom would be a data.jsonl missing its first few thousand cards, which
+    // parses perfectly.
+    const body = gunzipIfNeeded(res.body);
+
     const bar = new cliProgress.SingleBar({
         format: "   {bar} {percentage}% | {mb} MB | {eta_formatted} left | {cards} cards",
     }, cliProgress.Presets.shades_classic);
@@ -161,7 +171,7 @@ module.exports = async (argv = {}) => {
     // report however many cards it managed to see as the whole of Magic.
     const part = `${dataFile}.part`;
     try {
-        await pipeline(gunzipIfNeeded(res.body), lineCounter(state), fs.createWriteStream(part));
+        await pipeline(body, lineCounter(state), fs.createWriteStream(part));
     } catch (error){
         bar.stop();
         await fs.promises.rm(part, { force: true });
