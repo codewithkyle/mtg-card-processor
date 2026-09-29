@@ -137,7 +137,10 @@ module.exports = async (argv = {}) => {
         if (!fs.existsSync(file)){
             return false;
         }
-        stats.bytes += await upload(key, file);
+        // See the note in phase 2: awaiting inside a `+=` loses updates when
+        // several workers are in flight.
+        const bytes = await upload(key, file);
+        stats.bytes += bytes;
         uploaded.add(key);
         uploadLog.write(`${key}\n`);
         stats.uploaded++;

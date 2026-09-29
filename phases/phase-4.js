@@ -145,7 +145,8 @@ module.exports = async (argv = {}) => {
                 // honest signal that the conversion happened.
                 const out = await fs.promises.stat(job.output);
                 stats.webpBytes += out.size;
-                stats.pngBytes += (await fs.promises.stat(job.input)).size;
+                const before = await fs.promises.stat(job.input);
+                stats.pngBytes += before.size;
                 stats.converted++;
                 if (argv.prune){
                     await fs.promises.unlink(job.input);

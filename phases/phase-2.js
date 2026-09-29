@@ -115,7 +115,12 @@ module.exports = async (argv = {}) => {
             try {
                 await reserveSlot();
                 if (halted) return;
-                stats.bytes += await downloadImage(job.url, job.file);
+                // Hoisted out of a `+=` on purpose. `stats.bytes += await f()`
+                // reads stats.bytes BEFORE awaiting, so with eight workers in
+                // flight each one writes back a value it read before the others
+                // committed theirs, and most of the total is lost.
+                const bytes = await downloadImage(job.url, job.file);
+                stats.bytes += bytes;
                 stats.downloaded++;
             } catch (error){
                 if (error instanceof RateLimited){
