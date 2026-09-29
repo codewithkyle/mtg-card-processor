@@ -5,6 +5,11 @@
 //   node import.js --file import.jsonl            apply everything
 //   node import.js --file import.jsonl --dry-run  parse and report, write nothing
 //   node import.js --file import.jsonl --prune    also drop the pre-hash rows
+//                                                 and any row hanging off a
+//                                                 card that is not there
+//   node import.js --file import.jsonl --remove-withdrawn
+//                                                 also delete cards Scryfall no
+//                                                 longer carries
 //
 // This is deliberately a separate program from the phases. The manifest holds
 // no Cards.id and no file paths, so the same file can be applied to a test
@@ -24,11 +29,13 @@ const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 require("dotenv").config();
 
-const { importCard } = require("./lib/importer");
+const { importCard, pruneWithdrawn, pruneOrphans } = require("./lib/importer");
 
 const argv = yargs(hideBin(process.argv)).argv;
 const WORKERS = 8;
 const errorFile = path.join(process.cwd(), "import-errors");
+const withdrawnFile = path.join(process.cwd(), "withdrawn-removed.tsv");
+const orphanFile = path.join(process.cwd(), "orphans-removed.tsv");
 
 const db = process.env.DSN || {
     host: process.env.DB_HOST || "localhost",
@@ -119,6 +126,11 @@ async function countLines(file){
         }));
     }
 
+    // Collected as the file streams past, because the sweep at the end needs to
+    // know every card the manifest describes and the manifest is too big to hold
+    // in memory as objects. 36,000 oracle ids is about a megabyte of strings.
+    const manifestOracleIds = new Set();
+
     const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
     let batch = [];
     let read = 0;
@@ -126,7 +138,9 @@ async function countLines(file){
         if (!line.length) continue;
         if (argv.limit && read >= Number(argv.limit)) break;
         read++;
-        batch.push(JSON.parse(line));
+        const card = JSON.parse(line);
+        manifestOracleIds.add(card.oracleId);
+        batch.push(card);
         if (batch.length >= WORKERS * 8){
             await drain(batch);
             batch = [];
@@ -143,19 +157,105 @@ async function countLines(file){
     console.log(`   🖨️  printings: ${stats.prints}`);
     if (stats.failed) console.log(`   🚨 failed:    ${stats.failed} - see ${errorFile}`);
 
-    // Rows written before printings carried hashes. They have to outlive the
-    // import, because migrating Deck_Cards.print off release dates reads them.
-    if (argv.prune){
-        if (stats.failed || argv.limit || argv["dry-run"]){
-            console.log("   🚫 Refusing to prune after an incomplete run");
-        } else {
-            const [result] = await pool.query("DELETE FROM Card_Prints WHERE front_hash IS NULL");
-            console.log(`   🧹 pruned ${result.affectedRows} rows left over from the release date scheme`);
+    // Cards the manifest does not describe. Reported on every run so a drift
+    // between the catalogue and Scryfall is visible without being acted on, and
+    // removed only when asked - it deletes user deck slots, which no run should
+    // do as a side effect of importing.
+    //
+    // A run that failed or was cut short does not even report: its set of oracle
+    // ids is not the whole manifest, and every card missing from it looks exactly
+    // like a card Scryfall withdrew. A dry run has the whole set, so it reports
+    // and never deletes.
+    const truncated = stats.failed || argv.limit;
+    if (argv["remove-withdrawn"] && truncated){
+        console.log("   🚫 Refusing to remove withdrawn cards after an incomplete run");
+    } else if (!truncated){
+        const conn = await pool.getConnection();
+        try {
+            const sweep = await pruneWithdrawn(conn, manifestOracleIds, {
+                dryRun: !argv["remove-withdrawn"] || argv["dry-run"],
+                maxShare: argv["withdrawn-max-share"] ? Number(argv["withdrawn-max-share"]) : undefined,
+            });
+            if (sweep.refused){
+                console.log(`   🚨 ${sweep.refused}`);
+                console.log("      That reads as a truncated manifest, not as news from Scryfall. Nothing was removed.");
+                console.log("      Re-run phase 5 until it defers nothing, or pass --withdrawn-max-share to override.");
+            } else if (!sweep.withdrawn.length){
+                console.log("   ✨ every card in the catalogue is still in the manifest");
+            } else if (!sweep.deleted){
+                console.log(`   📌 ${sweep.withdrawn.length} cards are no longer in the manifest, across ${new Set(sweep.slots.map((s) => s.deckId)).size} decks (${sweep.slots.length} slots).`);
+                console.log(`      ${argv["dry-run"] ? "Nothing was removed: this is a dry run." : "Pass --remove-withdrawn to delete them."}`);
+            } else {
+                // Written before the summary because it is the only record that
+                // a given deck ever held a given card.
+                fs.writeFileSync(withdrawnFile,
+                    "# cards removed as withdrawn upstream, and the deck slots that named them\n" +
+                    "deck_id\tdeck\towner\tcard\tqty\tsideboard\n" +
+                    sweep.slots.map((s) => [s.deckId, s.deck, s.owner, s.card, s.qty, s.sideboard].join("\t")).join("\n") + "\n");
+                const children = Object.values(sweep.deleted.children).reduce((a, b) => a + b, 0);
+                console.log(`   🧹 removed ${sweep.deleted.cards} cards Scryfall no longer carries, and ${children} rows hanging off them`);
+                console.log(`   🃏 ${sweep.deleted.slots} deck slots named one and are gone; the decks are untouched`);
+                if (sweep.deleted.references){
+                    console.log(`   ⚠️  ${sweep.deleted.references} commander/partner references cleared`);
+                }
+                console.log(`   📝 what each deck lost: ${withdrawnFile}`);
+            }
+        } finally {
+            conn.release();
         }
+    }
+
+    // Rows written before printings carried hashes, and rows hanging off a card
+    // that no longer exists. Both are debris of the old scheme, so one flag
+    // clears both.
+    //
+    // The pre-hash printings have to go before the application migrates
+    // Deck_Cards.print off release dates, not after: that migration aborts on a
+    // choice whose printing still exists without a hash, and every one of these
+    // rows is exactly that. The choices worth resolving resolve against the
+    // hashed rows this import wrote.
+    if (argv.prune && (stats.failed || argv.limit || argv["dry-run"])){
+        console.log("   🚫 Refusing to prune after an incomplete run");
     } else {
-        const [[left]] = await pool.query("SELECT COUNT(*) AS n FROM Card_Prints WHERE front_hash IS NULL");
-        if (left.n){
-            console.log(`   📌 ${left.n} rows still have no hash. Migrate Deck_Cards.print, then re-run with --prune.`);
+        const conn = await pool.getConnection();
+        try {
+            if (argv.prune){
+                const [result] = await conn.query("DELETE FROM Card_Prints WHERE front_hash IS NULL");
+                console.log(`   🧹 pruned ${result.affectedRows} rows left over from the release date scheme`);
+            } else {
+                const [[left]] = await conn.query("SELECT COUNT(*) AS n FROM Card_Prints WHERE front_hash IS NULL");
+                if (left.n){
+                    console.log(`   📌 ${left.n} rows still have no hash. Prune them before migrating Deck_Cards.print.`);
+                }
+            }
+
+            const orphans = await pruneOrphans(conn, { dryRun: !argv.prune });
+            const total = orphans.orphaned + orphans.nullCard;
+            if (!total){
+                console.log("   ✨ nothing hanging off a card that is not there");
+            } else {
+                const shape = `${orphans.orphaned} pointing at ${orphans.cardIds} cards that do not exist, ${orphans.nullCard} with no card at all`;
+                if (!orphans.deleted){
+                    console.log(`   📌 ${total} orphaned rows - ${shape}.`);
+                    console.log(`      ${orphans.slots.length} of them are deck slots. Pass --prune to remove them.`);
+                } else {
+                    if (orphans.slots.length){
+                        fs.writeFileSync(orphanFile,
+                            "# deck slots removed because the card they named does not exist\n" +
+                            "deck_id\tdeck\towner\tcard_id\tqty\tsideboard\n" +
+                            orphans.slots.map((s) => [s.deckId, s.deck, s.owner, s.cardId, s.qty, s.sideboard].join("\t")).join("\n") + "\n");
+                    }
+                    console.log(`   🧹 pruned ${total} orphaned rows - ${shape}`);
+                    if (orphans.slots.length){
+                        console.log(`   🃏 ${orphans.slots.length} were deck slots; the decks are untouched - ${orphanFile}`);
+                    }
+                    if (orphans.references){
+                        console.log(`   ⚠️  ${orphans.references} commander/partner references cleared`);
+                    }
+                }
+            }
+        } finally {
+            conn.release();
         }
     }
 

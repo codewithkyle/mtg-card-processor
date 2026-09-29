@@ -42,7 +42,7 @@ module.exports = async () => {
         prints: 0,
         png: 0,
         webp: 0,
-        missingPng: 0,
+        missing: 0,
         orphans: 0,
         unreadable: 0,
         miscounted: 0,
@@ -73,14 +73,17 @@ module.exports = async () => {
 
             const expected = expectedFiles(dir, card, looks);
             for (const [file, what] of expected){
-                if (fs.existsSync(file)){
-                    stats.png++;
-                } else {
-                    stats.missingPng++;
+                // An image counts as present in either form. Phase 4 --prune
+                // deletes the png once the webp is written, so after a pruned
+                // run the png is meant to be gone and only its absence
+                // alongside a missing webp is a problem.
+                const png = fs.existsSync(file);
+                const webp = fs.existsSync(file.replace(/\.png$/, ".webp"));
+                if (png) stats.png++;
+                if (webp) stats.webp++;
+                if (!png && !webp){
+                    stats.missing++;
                     complaints.push(`⚠️  ${card.name} is missing its ${what} (${path.basename(file)})`);
-                }
-                if (fs.existsSync(file.replace(/\.png$/, ".webp"))){
-                    stats.webp++;
                 }
             }
 
@@ -108,7 +111,7 @@ module.exports = async () => {
     console.log(`   🎨 looks:          ${stats.looks}`);
     console.log(`   🖨️  printings:      ${stats.prints}`);
     console.log(`   💾 images on disk: ${stats.png} png, ${stats.webp} webp`);
-    if (stats.missingPng) console.log(`   ⚠️  missing images: ${stats.missingPng}`);
+    if (stats.missing)    console.log(`   ⚠️  missing images: ${stats.missing}`);
     if (stats.orphans)    console.log(`   🧹 unreferenced:   ${stats.orphans}`);
     if (stats.miscounted) console.log(`   🚨 bad manifests:  ${stats.miscounted}`);
     if (stats.unreadable) console.log(`   🚨 unreadable:     ${stats.unreadable}`);

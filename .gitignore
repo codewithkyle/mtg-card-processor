@@ -16,3 +16,8 @@ upload-errors
 import-errors
 download-errors
 image-errors
+
+# records written by the withdrawn card sweep
+withdrawn-removed.tsv
+legacy-cards.txt
+orphans-removed.tsv

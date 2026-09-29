@@ -139,7 +139,14 @@ module.exports = async (argv = {}) => {
         while (pending.length){
             const job = pending.pop();
             try {
-                await run(encoder.name, encoder.args(job.input, job.output, quality));
+                // Encoded under a temporary name and moved into place once it
+                // is whole. Neither encoder writes atomically, and resume here
+                // is just "does the webp exist" - so a run killed mid encode
+                // would otherwise leave a truncated file that the next run
+                // skips as finished and phase 5 then uploads.
+                const partial = `${job.output}.part`;
+                await run(encoder.name, encoder.args(job.input, partial, quality));
+                await fs.promises.rename(partial, job.output);
                 // Checked rather than assumed: both encoders report plenty on
                 // stderr that is not an error, so the output file is the only
                 // honest signal that the conversion happened.
@@ -154,6 +161,7 @@ module.exports = async (argv = {}) => {
                 }
             } catch (error){
                 stats.failed++;
+                await fs.promises.rm(`${job.output}.part`, { force: true });
                 fs.appendFileSync(errorFile, `${error.message} - ${job.input}\n`);
             }
             const saved = stats.pngBytes ? `${Math.round((1 - stats.webpBytes / stats.pngBytes) * 100)}% smaller` : "";
