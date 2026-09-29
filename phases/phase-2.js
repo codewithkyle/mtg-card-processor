@@ -61,6 +61,11 @@ async function buildQueue(dirs){
     return [...jobs.values()];
 }
 
+// What phase 4 leaves in a png's place.
+function webpFor(file){
+    return file.replace(/\.png$/, ".webp");
+}
+
 function hours(seconds){
     const h = Math.floor(seconds / 3600);
     const m = Math.round((seconds % 3600) / 60);
@@ -84,7 +89,16 @@ module.exports = async (argv = {}) => {
     // listing any more: the old index was keyed on a card id and a release
     // date, neither of which names an image now, and a three hour run wants a
     // check it can make locally.
-    const pending = queue.filter((job) => !fs.existsSync(job.file));
+    //
+    // An image counts as held in either form, which is not a nicety. Phase 4
+    // --prune deletes the png once the webp is written, so a catalogue that has
+    // been converted has almost no png left - and a check that only looked for
+    // the png would call all 109,442 of them missing and fetch the entire
+    // catalogue again from Scryfall. Three hours and 82GB to arrive back where
+    // it started. Phase 3 has always counted both; this is the same rule.
+    //
+    // To deliberately re-fetch an image, delete its webp as well as its png.
+    const pending = queue.filter((job) => !fs.existsSync(job.file) && !fs.existsSync(webpFor(job.file)));
     const onDisk = queue.length - pending.length;
 
     // --limit exists because the full run is hours long. It fetches a slice

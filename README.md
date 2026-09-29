@@ -32,12 +32,24 @@ node import.js --file import.jsonl --prune              # apply to the local dat
 ./deploy-import.sh --host <host> --user <user> --prune --remove-withdrawn
 ```
 
-Every phase resumes. Phase 2 and 4 skip what is already on disk, phase 5 skips
-what is already in the bucket, and `import.js` updates rows rather than
-duplicating them — so an interrupted run is fixed by running it again, and a
-run with nothing to do says so and stops. That is what makes a set release cheap:
-the first full run moved 111,000 images, and a set release moves the few hundred
-that are new.
+Every phase resumes, and `import.js` updates rows rather than duplicating them —
+so an interrupted run is fixed by running it again, and a run with nothing to do
+says so and stops. That is what makes a set release cheap: the first full run
+moved 111,000 images, and a set release moves the few hundred that are new.
+
+Nothing ever asks Scryfall or R2 what it already has. Each resume is a local
+check, and each one has to be read exactly:
+
+| phase | "already have it" means | if the check is wrong |
+| --- | --- | --- |
+| 2 `download` | the png **or** the webp is in `cards/` | re-downloads the catalogue, 3 hours and 82GB |
+| 4 `convert` | the webp is in `cards/` | re-encodes, costs CPU only |
+| 5 `upload` | the key is in the local `uploaded` ledger | re-uploads 111,000 objects |
+
+Phase 2 counting the webp is the one worth remembering. Phase 4 `--prune` deletes
+each png once its webp is written, so a converted catalogue has almost no png
+left — and a phase 2 that only looked for pngs would call all 109,442 of them
+missing. To deliberately re-fetch an image, delete its webp as well as its png.
 
 ### What each phase costs
 
@@ -107,7 +119,7 @@ delete there is nothing left to join back to.
 | `data.jsonl` | phase 0 | regenerable, 632MB |
 | `data.meta.json` | phase 0 | which export `data.jsonl` is, and when it was fetched |
 | `cards/<oracle id>/` | phases 1–4 | `card.json`, `prints.jsonl`, and the images. 15GB |
-| `uploaded` | phase 5 | the resume ledger. **Lose this and everything uploads again** |
+| `uploaded` | phase 5 | the resume ledger, one key per line. **Lose this and everything uploads again** — it is never rebuilt by listing R2 |
 | `import.jsonl` | phase 5 | what the database should hold |
 | `import.meta.json` | phase 5 | whether that manifest is complete. Shipped with it |
 | `*-errors` | any phase | appended to, never truncated. Delete when you have read them |
