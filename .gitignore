@@ -10,3 +10,9 @@ cards.jsonl
 divinedrop.sql
 divinedrop-backup.sql
 cards-bkup
+import.jsonl
+uploaded
+upload-errors
+import-errors
+download-errors
+image-errors

@@ -5,19 +5,19 @@ const argv = yargs(hideBin(process.argv)).argv
 let phase = argv?.p || argv?.phase || null;
 switch (phase){
     case 1:
-        require("./phases/phase-1")();
+        require("./phases/phase-1")(argv);
         break;
     case 2:
-        require("./phases/phase-2")(argv?.refresh ?? false);
+        require("./phases/phase-2")(argv);
         break;
     case 3:
-        require("./phases/phase-3")();
+        require("./phases/phase-3")(argv);
         break;
     case 4:
-        require("./phases/phase-4")();
+        require("./phases/phase-4")(argv);
         break;
     case 5:
-        require("./phases/phase-5")();
+        require("./phases/phase-5")(argv);
         break;
     default:
         console.log("⚠️  Invalid phase variable provided. Use the -p or --phase flag as 1-5. ⚠️");
