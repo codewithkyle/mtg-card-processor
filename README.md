@@ -37,6 +37,13 @@ so an interrupted run is fixed by running it again, and a run with nothing to do
 says so and stops. That is what makes a set release cheap: the first full run
 moved 111,000 images, and a set release moves the few hundred that are new.
 
+That holds all the way down to the row. Every card row and every row hanging off
+it is keyed on something derived from the card itself — Scryfall's print id for a
+printing, a digest of the card and the value for a colour, name, text, keyword or
+subtype — so re-importing a card that has not changed writes **nothing at all**,
+rather than deleting its rows and putting them back under new ids. Measured on
+3,000 cards: 29,566 row modifications per repeat import before, zero after.
+
 Nothing ever asks Scryfall or R2 what it already has. Each resume is a local
 check, and each one has to be read exactly:
 
