@@ -17,6 +17,10 @@ import-errors
 download-errors
 image-errors
 
+# the ledger as it was before --repair-ledger, and every atomic write in flight
+uploaded.bak
+*.part
+
 # provenance written beside the two big generated files
 data.meta.json
 import.meta.json

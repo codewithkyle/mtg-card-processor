@@ -13,6 +13,7 @@ const cardsDir = path.join(cwd, "cards");
 const errorFile = path.join(cwd, "image-errors");
 
 const { getDirectories } = require("../lib/utils");
+const ledger = require("../lib/ledger");
 
 const DEFAULT_QUALITY = 80;
 
@@ -59,20 +60,20 @@ async function buildQueue(dirs){
             console.log(`🚨 Missing manifest at ${dir}, run phase 1`);
             continue;
         }
-        const files = [];
-        if (card.art){
-            files.push(path.join(dir, "art.png"));
+        const files = new Map();
+        if (card.art && card.defaultFront){
+            files.set(path.join(dir, "art.png"), ledger.artKey(card.defaultFront));
         }
         for (const line of manifest.split("\n")){
             if (!line.length) continue;
             const look = JSON.parse(line);
-            files.push(path.join(dir, `${look.hash}-front.png`));
+            files.set(path.join(dir, `${look.hash}-front.png`), ledger.faceKey(look.hash, "front"));
             if (look.backHash && look.back){
-                files.push(path.join(dir, `${look.backHash}-back.png`));
+                files.set(path.join(dir, `${look.backHash}-back.png`), ledger.faceKey(look.backHash, "back"));
             }
         }
-        for (const input of new Set(files)){
-            jobs.push({ input, output: input.replace(/\.png$/, ".webp") });
+        for (const [input, key] of files){
+            jobs.push({ input, output: ledger.webpFor(input), key });
         }
     }
     return jobs;
@@ -99,10 +100,14 @@ module.exports = async (argv = {}) => {
     console.log(`📇 Reading manifests for ${dirs.length} cards`);
     const queue = await buildQueue(dirs);
 
+    const uploaded = ledger.load();
+    console.log(`📇 ${ledger.describe(uploaded)}`);
+
     const pending = [];
     const convertedEarlier = [];
     let converted = 0;
     let absent = 0;
+    let alreadyUp = 0;
     for (const job of queue){
         if (fs.existsSync(job.output)){
             converted++;
@@ -114,14 +119,25 @@ module.exports = async (argv = {}) => {
                 convertedEarlier.push(job.input);
             }
         } else if (!fs.existsSync(job.input)){
-            // Phase 3 is what reports these; here it is simply nothing to do.
-            absent++;
+            // No png and no webp. If the object is in the bucket then this is
+            // simply a machine that does not hold a copy, and there is nothing to
+            // convert and nothing wrong - saying "run phase 2 first" here would
+            // send you off to re-download 99GB of images that are already
+            // uploaded. Only the rest are phase 3's business.
+            if (uploaded.has(job.key)){
+                alreadyUp++;
+            } else {
+                absent++;
+            }
         } else {
             pending.push(job);
         }
     }
 
     console.log(`🎯 ${queue.length} images, ${converted} already converted, ${pending.length} to encode`);
+    if (alreadyUp){
+        console.log(`   ☁️  ${alreadyUp} are already in the bucket with no local copy - nothing to do`);
+    }
     if (absent){
         console.log(`   ⚠️  ${absent} have no png yet - run phase 2 first`);
     }
