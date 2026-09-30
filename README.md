@@ -1,225 +1,114 @@
 # mtg-card-processor
 
-Turns Scryfall's bulk export into card images in Cloudflare R2 and card rows in
-the divinedrop database.
+Scryfall bulk export → card images in Cloudflare R2 → card rows in the divinedrop
+database.
 
-Six phases run locally and write two things: a directory of images per card, and
-an `import.jsonl` describing what the database should hold. A seventh program,
-`import.js`, applies that file to a database — locally for a rehearsal, then on
-production through `deploy-import.sh`. The split is the point: the manifest holds
-no `Cards.id` and no file paths, so the same file means the same thing against
-any database, and applying it can only touch card tables. `Decks`, `Deck_Cards`
-and `Sleeves` are never written except by the two sweeps described below, which
-say so before they run.
+Six phases run locally and produce `import.jsonl`. Then `import.js` applies it to
+a database, and `deploy-import.sh` does that on production.
+
+## Setup
+
+```bash
+npm install
+cp .env.example .env          # fill in DB_* and S3_*
+cwebp -version                # or: vips --version   (phase 4 needs one of them)
+```
 
 ## A new set is out
 
+Run in order. Every phase resumes, so re-running after an interruption is safe.
+
 ```bash
-npm run phase0     # download the current Scryfall export to data.jsonl
-npm run phase1     # group its printings into cards/<oracle id>/ manifests
-npm run phase2     # fetch the images the manifests name that are not on disk
-npm run phase3     # check the manifests against what is on disk
-npm run phase4 -- --prune     # encode png to webp, deleting the png as it goes
-npm run phase5     # upload new objects to R2, write import.jsonl
+npm run phase0                # download the Scryfall export -> data.jsonl
+npm run phase1                # group printings into cards/<oracle id>/ manifests
+npm run phase2                # fetch images not already on disk or in R2
+npm run phase3                # check manifests against disk + R2
+npm run phase4 -- --prune     # png -> webp, deleting each png as it converts
+npm run phase5                # upload new objects to R2, write import.jsonl
 ```
 
-Then rehearse against a local database, and only then go to production:
+Phase 5 must finish with `✅ complete`. If it reports deferred cards, run phase 2
+and phase 4 again, then phase 5.
+
+To try the whole sequence cheaply first, add `--limit 20` to phases 2 and 5.
+
+## Deploy
+
+Rehearse against a local database, then go to production.
 
 ```bash
-node import.js --file import.jsonl --dry-run            # parse and report, write nothing
-node import.js --file import.jsonl --prune              # apply to the local database
+./local-db.sh up                                          # MySQL in Docker from database.sql
+node import.js --file import.jsonl --dry-run              # report, write nothing
+node import.js --file import.jsonl --prune                # apply locally
+
 ./deploy-import.sh --host <host> --user <user> --dry-run
 ./deploy-import.sh --host <host> --user <user> --prune --remove-withdrawn
 ```
 
-Every phase resumes, and `import.js` updates rows rather than duplicating them —
-so an interrupted run is fixed by running it again, and a run with nothing to do
-says so and stops. That is what makes a set release cheap: the first full run
-moved 111,000 images, and a set release moves the few hundred that are new.
+Check the `Database:` line it prints before answering the prompt.
 
-That holds all the way down to the row. Every card row and every row hanging off
-it is keyed on something derived from the card itself — Scryfall's print id for a
-printing, a digest of the card and the value for a colour, name, text, keyword or
-subtype — so re-importing a card that has not changed writes **nothing at all**,
-rather than deleting its rows and putting them back under new ids. Measured on
-3,000 cards: 29,566 row modifications per repeat import before, zero after.
+`--prune` deletes rows nothing can render. `--remove-withdrawn` deletes cards
+Scryfall no longer publishes. **Both delete `Deck_Cards` rows**, so read the
+output — some decks come up a card short. Never automate either one. What they
+remove is written to `orphans-removed.tsv` and `withdrawn-removed.tsv` first.
 
-Nothing ever asks Scryfall or R2 what it already has during a run. Each resume is
-a local check, and each one has to be read exactly:
+## Flags
 
-| phase | "already have it" means | if the check is wrong |
+| flag | phases | what it does |
 | --- | --- | --- |
-| 2 `download` | the png or the webp is in `cards/`, **or** the key is in `uploaded` | re-downloads the catalogue, 3 hours and 99GB |
-| 3 `validate` | the same three, reported separately | confuses "no local copy" with "no image anywhere" |
-| 4 `convert` | the webp is in `cards/`, **or** the key is in `uploaded` | re-encodes, costs CPU only |
-| 5 `upload` | the key is in `uploaded` | re-uploads 111,000 objects |
+| `--limit <n>` | 2, 5, import.js, deploy | only the first n |
+| `--prune` | 3, 4, import.js, deploy | 3: delete unreferenced images. 4: delete each png after converting. import.js: delete unrenderable rows |
+| `--dry-run` | import.js, deploy | report only, write nothing |
+| `--remove-withdrawn` | import.js, deploy | delete cards no longer in the manifest |
+| `--card <oracle id>` | 5 | one card only |
+| `--skip-upload` | 5 | write the manifest without touching R2 |
+| `--quality <n>` | 4 | webp quality, default 80 |
+| `--force` | 0 | re-download the export even if it is current |
+| `--verify-bucket` | 5 | list R2 and reconcile it against the `uploaded` ledger |
+| `--repair-ledger` | 5 | with `--verify-bucket`: rewrite the ledger as what R2 holds |
+| `--env-file <file>` | deploy | install a `.env` on the server |
+| `--runner <auto\|node\|docker>` | deploy | how to run it remotely |
 
-**The `uploaded` ledger is the authority, not `cards/`.** An image whose finished
-object is already in R2 is held, whatever this machine happens to have on disk —
-so `cards/` is a cache and deleting it costs nothing but the time to rebuild the
-manifests. That is the whole point: before, deleting those 15GB to reclaim space
-silently committed the next run to re-fetching 99GB of png over three hours to
-rebuild objects that were already in the bucket.
+## If something refuses
 
-Phase 2 also counting the webp still matters. Phase 4 `--prune` deletes each png
-once its webp is written, so a converted catalogue has almost no png left — and a
-phase 2 that only looked for pngs would call all 109,442 of them missing.
-
-To deliberately re-fetch an image, its key has to come out of `uploaded` as well
-as its files off the disk.
-
-### What each phase costs
-
-| phase | what it does | scale |
+| message | what it means | override |
 | --- | --- | --- |
-| 0 `fetch` | Scryfall's `default_cards` export, gunzipped to `data.jsonl` | 75MB down, 632MB on disk, seconds |
-| 1 `process` | groups 118,000 printings into 36,000 cards by the artwork they show | streams the whole file, minutes |
-| 2 `download` | one image per distinct look, 10 requests a second | hours for a full catalogue, minutes for a set, nothing if R2 has them |
-| 3 `validate` | reads every manifest, checks it against the filesystem | minutes, writes nothing unless `--prune` |
-| 4 `convert` | png to webp at q80, one encoder per core | 82GB becomes 16GB; hours full, minutes for a set |
-| 5 `upload` | new objects to R2, then writes `import.jsonl` | 53MB manifest, 36,000 lines |
+| phase 2: more than 10000 images | the `uploaded` ledger is probably missing | `--allow-bulk-download`, or `--limit 20` |
+| phase 1: over 5% of cards absent from the export | `data.jsonl` is truncated — re-run phase 0 | `--allow-mass-removal` |
+| `--remove-withdrawn` refused | `import.meta.json` says the manifest is incomplete | `--assume-complete` |
+| withdrawn sweep over 5% | the same shortfall, wholesale | `--withdrawn-max-share <n>` |
+| `--repair-ledger` would drop over 5% | wrong bucket or endpoint | `--force` |
 
-Phase 2 holds itself to Scryfall's rate limit across all eight workers and stops
-the whole run on a 429 rather than pressing on into a ban. Re-run it to continue.
+Only override when you know why the number is what it is.
 
-### Checking the ledger against R2
+## Other things that happen
 
-Because the ledger is authoritative, it is the single witness that an object was
-uploaded — where the local webp used to be a second one. `--verify-bucket` is how
-that witness gets checked:
+**Phase 2 stops on a 429** — expected. Re-run it.
 
-```bash
-npm run phase5 -- --verify-bucket                      # report only, writes nothing
-npm run phase5 -- --verify-bucket --repair-ledger      # rewrite it as what the bucket holds
-```
+**Phase 3 reports stale manifests** — phase 1 died partway. Re-run phase 1.
 
-It lists the bucket (about 112 paginated requests, a few Class B operations) and
-reports four things: keys the ledger claims that R2 does **not** have, which are
-the dangerous ones because every phase skips them as done; objects in R2 the
-ledger has not recorded, which are merely wasteful; objects the manifests name
-that are in neither; and objects nothing references any more. Run it after
-anything touches the bucket from outside this tool, and once before you first
-rely on deleting the local cache. It is not part of an ordinary run.
+**`Access denied for user ''`** — the server's `.env` sets `DSN` in Go driver
+format. Remove `DSN` from it and let `DB_*` speak.
 
-## The two sweeps
+**Out of disk** — the images in `cards/` are a cache once uploaded, so deleting
+them is safe. Run `npm run phase5 -- --verify-bucket` first to confirm the ledger
+matches R2. Keep the `uploaded` file itself, or phase 2 will refuse to run.
 
-Both belong to `import.js`, both **report on every run and delete only when
-asked**, and both can remove `Deck_Cards` rows — the only user rows anything here
-touches. A deck is never deleted; it just comes up a card short, the same as any
-card rotating out.
+## Files
 
-**`--prune`** deletes rows nothing can render. Two shapes: a `Card_Prints` row
-with no `front_hash` (the application resolves a card's image from that hash, so
-a hashless printing is one it cannot show), and any row hanging off a card that
-is not there. The schema carries no foreign keys at all, so nothing cascades and
-nothing cleans up after a card that goes away. Keep running it: a sweep that
-reports nothing is how you know the schema has not started leaking again.
+| path | keep? |
+| --- | --- |
+| `uploaded` | **yes** — the record of what is in R2, 5.5MB. Rebuild with `phase5 --verify-bucket --repair-ledger` |
+| `.env` | yes. Never committed, never shipped to the server |
+| `database.sql` | production backup, used by `local-db.sh` |
+| `data.jsonl` | regenerable by phase 0, 632MB |
+| `cards/` | manifests regenerable by phase 1 (285MB); the images are a cache (15GB) |
+| `import.jsonl`, `import.meta.json` | the deploy artefacts, regenerable by phase 5 |
+| `*-errors` | read them, then delete |
 
-**`--remove-withdrawn`** deletes cards the manifest no longer names. Scryfall
-does withdraw cards — it deleted the Alchemy rebalanced cards outright rather
-than superseding them, 217 of them, and their oracle ids now return not_found.
-A withdrawn card left in place keeps whatever `front` it had when it was last
-seen and renders as a broken tile in every list that includes it, forever, since
-no future run will ever refresh it. This is the flag that keeps the catalogue in
-step with upstream, so it belongs in the routine run.
+## Reference
 
-Both were built for the one-time migration off DigitalOcean and both earn their
-place in the seasonal run. Neither is safe to run blind, which is what the guard
-rails are for.
-
-## What refuses, and why
-
-Every one of these exists because the failure it prevents is invisible: the run
-reports success and the damage shows up later, in someone's deck.
-
-| guard | refuses when | the failure it prevents |
-| --- | --- | --- |
-| phase 1 stale ceiling | more than 5% of local cards are absent from the export | a truncated `data.jsonl` reads as Magic having shrunk, and deletes gigabytes of images |
-| phase 5 `import.meta.json` | — | records whether the manifest covers every card; nothing else knows |
-| `--remove-withdrawn` | that file is missing or says incomplete | a phase 5 that deferred a dozen cards is indistinguishable from Scryfall withdrawing them |
-| withdrawn share ceiling | more than 5% of the catalogue would be removed | the same shortfall, wholesale |
-| `--prune` / `--remove-withdrawn` | the import itself failed or was cut short with `--limit` | acting on a catalogue that is not the one the manifest describes |
-| `deploy-import.sh` | `--remove-withdrawn` without a complete manifest | fails before 40MB goes over the wire |
-| phase 2 bulk ceiling | more than 10,000 images would be fetched | a missing `uploaded` ledger silently committing you to a 3 hour, 99GB download |
-| `--repair-ledger` | it would drop more than 5% of the ledger | a wrong endpoint, bucket or prefix lists successfully and returns almost nothing |
-
-`--assume-complete` overrides the manifest check, `--withdrawn-max-share`
-overrides that ceiling, `--allow-bulk-download` overrides phase 2's, and `--force`
-overrides the repair ceiling. All are for when you know why the number is what it
-is. Phase 2's guard is also satisfied by `--limit`, which is the better way to
-prove the pipeline end to end before committing to a long run.
-
-Whatever a sweep removes, it writes down first: `withdrawn-removed.tsv` and
-`orphans-removed.tsv` record the deck, its owner and the card, because after the
-delete there is nothing left to join back to.
-
-## Files on disk
-
-| path | written by | keep? |
-| --- | --- | --- |
-| `data.jsonl` | phase 0 | regenerable, 632MB |
-| `data.meta.json` | phase 0 | which export `data.jsonl` is, and when it was fetched |
-| `cards/<oracle id>/` | phases 1–4 | `card.json` and `prints.jsonl` (285MB, regenerable by phase 1) plus the images (15GB, a cache once uploaded) |
-| `uploaded` | phase 5 | the ledger, one key per line, 5.5MB. **The authority for what is in R2.** Lose it and phase 2 refuses rather than re-fetching 99GB; rebuild it with `phase5 --verify-bucket --repair-ledger` |
-| `uploaded.bak` | `--repair-ledger` | the ledger as it was before the last repair |
-| `import.jsonl` | phase 5 | what the database should hold |
-| `import.meta.json` | phase 5 | whether that manifest is complete. Shipped with it |
-| `*-errors` | any phase | appended to, never truncated. Delete when you have read them |
-
-`npm run phase3 -- --prune` deletes images no manifest names and any `.part` file
-a killed run left behind. `npm run phase4 -- --prune` deletes a png once its webp
-exists, including ones an earlier run left behind.
-
-Nothing here reads a card's directory by name except by its oracle id, and phase
-1 removes the directory of any card the export no longer describes — so a card
-Scryfall withdraws stops costing disk after the next phase 1.
-
-## Environment
-
-Copy `.env.example` to `.env`. The database variables are read by `import.js`;
-the `S3_*` variables are read by phase 5 and use the same names as the
-application's `helpers/s3.go`, so one file shape serves both repos.
-
-There are deliberately no defaults for `S3_ENDPOINT` or the credentials. An
-incomplete `.env` stops phase 5 rather than sending 16GB somewhere plausible.
-
-`local-db.sh` runs a MySQL 8.0 in Docker and restores a `database.sql` into it,
-which is how a production dump gets rehearsed against before anything is
-deployed.
-
-## Deploying to production
-
-`./deploy-import.sh --help` covers the flags. It sends six files — `import.js`,
-`lib/importer.js`, `lib/constants.js`, a pinned `package.json`, the gzipped
-manifest and its `import.meta.json` — verifies the transfer by checksum, and runs
-the import on the far side under the server's own node or a throwaway container.
-
-The local `.env` is never shipped. The server keeps its own in the target
-directory; `--env-file` installs one over stdin so its contents never reach a
-process list.
-
-Check the `Database:` line it prints before answering the prompt. It names the
-resolved host, user and database and where each came from, and it is the cheapest
-place to catch a server pointed at the wrong thing.
-
-## When something goes wrong
-
-**`Access denied for user ''@'...' (using password: NO)`** — the `.env` on the
-server sets `DSN` in the Go driver's format, `user:pass@tcp(host:port)/dbname`.
-mysql2 accepts that string and silently mis-parses it into an empty user. That is
-now handled and `import.js` prints which form it used, but if the resolved line
-looks wrong, remove `DSN` from that `.env` and let `DB_*` speak.
-
-**Phase 2 stops with a 429** — expected, and deliberate. Re-run it.
-
-**Phase 5 defers cards** — their default image is not in the bucket, so the card
-would point at an object that does not exist. Run phases 2 and 4, then 5 again.
-Until it reports the manifest complete, `--remove-withdrawn` will refuse.
-
-**Phase 3 reports stale manifests** — a phase 1 died partway and left manifests
-from the previous export. Run phase 1 again.
-
-**A card looks wrong in the application** — `lib/hash.js` decides which printings
-share an image, and `lib/utils.js` decides which cards are skipped entirely
-(non-English, art series, reversible cards, plain basic lands, the `Card` type).
-Both have their reasoning written down where the code is.
+- `./deploy-import.sh --help` — every deploy flag
+- `./local-db.sh` — `up`, `down`, `reset`, `dump`, `status`, `shell`, `query`
+- `node index.js` with no arguments — lists the phases
+- `PLAN.md` — the reasoning behind the current design, if you need it
