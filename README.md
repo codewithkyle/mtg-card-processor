@@ -37,19 +37,36 @@ so an interrupted run is fixed by running it again, and a run with nothing to do
 says so and stops. That is what makes a set release cheap: the first full run
 moved 111,000 images, and a set release moves the few hundred that are new.
 
-Nothing ever asks Scryfall or R2 what it already has. Each resume is a local
-check, and each one has to be read exactly:
+That holds all the way down to the row. Every card row and every row hanging off
+it is keyed on something derived from the card itself — Scryfall's print id for a
+printing, a digest of the card and the value for a colour, name, text, keyword or
+subtype — so re-importing a card that has not changed writes **nothing at all**,
+rather than deleting its rows and putting them back under new ids. Measured on
+3,000 cards: 29,566 row modifications per repeat import before, zero after.
+
+Nothing ever asks Scryfall or R2 what it already has during a run. Each resume is
+a local check, and each one has to be read exactly:
 
 | phase | "already have it" means | if the check is wrong |
 | --- | --- | --- |
-| 2 `download` | the png **or** the webp is in `cards/` | re-downloads the catalogue, 3 hours and 82GB |
-| 4 `convert` | the webp is in `cards/` | re-encodes, costs CPU only |
-| 5 `upload` | the key is in the local `uploaded` ledger | re-uploads 111,000 objects |
+| 2 `download` | the png or the webp is in `cards/`, **or** the key is in `uploaded` | re-downloads the catalogue, 3 hours and 99GB |
+| 3 `validate` | the same three, reported separately | confuses "no local copy" with "no image anywhere" |
+| 4 `convert` | the webp is in `cards/`, **or** the key is in `uploaded` | re-encodes, costs CPU only |
+| 5 `upload` | the key is in `uploaded` | re-uploads 111,000 objects |
 
-Phase 2 counting the webp is the one worth remembering. Phase 4 `--prune` deletes
-each png once its webp is written, so a converted catalogue has almost no png
-left — and a phase 2 that only looked for pngs would call all 109,442 of them
-missing. To deliberately re-fetch an image, delete its webp as well as its png.
+**The `uploaded` ledger is the authority, not `cards/`.** An image whose finished
+object is already in R2 is held, whatever this machine happens to have on disk —
+so `cards/` is a cache and deleting it costs nothing but the time to rebuild the
+manifests. That is the whole point: before, deleting those 15GB to reclaim space
+silently committed the next run to re-fetching 99GB of png over three hours to
+rebuild objects that were already in the bucket.
+
+Phase 2 also counting the webp still matters. Phase 4 `--prune` deletes each png
+once its webp is written, so a converted catalogue has almost no png left — and a
+phase 2 that only looked for pngs would call all 109,442 of them missing.
+
+To deliberately re-fetch an image, its key has to come out of `uploaded` as well
+as its files off the disk.
 
 ### What each phase costs
 
@@ -57,13 +74,32 @@ missing. To deliberately re-fetch an image, delete its webp as well as its png.
 | --- | --- | --- |
 | 0 `fetch` | Scryfall's `default_cards` export, gunzipped to `data.jsonl` | 75MB down, 632MB on disk, seconds |
 | 1 `process` | groups 118,000 printings into 36,000 cards by the artwork they show | streams the whole file, minutes |
-| 2 `download` | one image per distinct look, 10 requests a second | hours for a full catalogue, minutes for a set |
+| 2 `download` | one image per distinct look, 10 requests a second | hours for a full catalogue, minutes for a set, nothing if R2 has them |
 | 3 `validate` | reads every manifest, checks it against the filesystem | minutes, writes nothing unless `--prune` |
 | 4 `convert` | png to webp at q80, one encoder per core | 82GB becomes 16GB; hours full, minutes for a set |
 | 5 `upload` | new objects to R2, then writes `import.jsonl` | 53MB manifest, 36,000 lines |
 
 Phase 2 holds itself to Scryfall's rate limit across all eight workers and stops
 the whole run on a 429 rather than pressing on into a ban. Re-run it to continue.
+
+### Checking the ledger against R2
+
+Because the ledger is authoritative, it is the single witness that an object was
+uploaded — where the local webp used to be a second one. `--verify-bucket` is how
+that witness gets checked:
+
+```bash
+npm run phase5 -- --verify-bucket                      # report only, writes nothing
+npm run phase5 -- --verify-bucket --repair-ledger      # rewrite it as what the bucket holds
+```
+
+It lists the bucket (about 112 paginated requests, a few Class B operations) and
+reports four things: keys the ledger claims that R2 does **not** have, which are
+the dangerous ones because every phase skips them as done; objects in R2 the
+ledger has not recorded, which are merely wasteful; objects the manifests name
+that are in neither; and objects nothing references any more. Run it after
+anything touches the bucket from outside this tool, and once before you first
+rely on deleting the local cache. It is not part of an ordinary run.
 
 ## The two sweeps
 
@@ -104,9 +140,14 @@ reports success and the damage shows up later, in someone's deck.
 | withdrawn share ceiling | more than 5% of the catalogue would be removed | the same shortfall, wholesale |
 | `--prune` / `--remove-withdrawn` | the import itself failed or was cut short with `--limit` | acting on a catalogue that is not the one the manifest describes |
 | `deploy-import.sh` | `--remove-withdrawn` without a complete manifest | fails before 40MB goes over the wire |
+| phase 2 bulk ceiling | more than 10,000 images would be fetched | a missing `uploaded` ledger silently committing you to a 3 hour, 99GB download |
+| `--repair-ledger` | it would drop more than 5% of the ledger | a wrong endpoint, bucket or prefix lists successfully and returns almost nothing |
 
-`--assume-complete` overrides the manifest check and `--withdrawn-max-share`
-overrides the ceiling. Both are for when you know why the number is what it is.
+`--assume-complete` overrides the manifest check, `--withdrawn-max-share`
+overrides that ceiling, `--allow-bulk-download` overrides phase 2's, and `--force`
+overrides the repair ceiling. All are for when you know why the number is what it
+is. Phase 2's guard is also satisfied by `--limit`, which is the better way to
+prove the pipeline end to end before committing to a long run.
 
 Whatever a sweep removes, it writes down first: `withdrawn-removed.tsv` and
 `orphans-removed.tsv` record the deck, its owner and the card, because after the
@@ -118,8 +159,9 @@ delete there is nothing left to join back to.
 | --- | --- | --- |
 | `data.jsonl` | phase 0 | regenerable, 632MB |
 | `data.meta.json` | phase 0 | which export `data.jsonl` is, and when it was fetched |
-| `cards/<oracle id>/` | phases 1–4 | `card.json`, `prints.jsonl`, and the images. 15GB |
-| `uploaded` | phase 5 | the resume ledger, one key per line. **Lose this and everything uploads again** — it is never rebuilt by listing R2 |
+| `cards/<oracle id>/` | phases 1–4 | `card.json` and `prints.jsonl` (285MB, regenerable by phase 1) plus the images (15GB, a cache once uploaded) |
+| `uploaded` | phase 5 | the ledger, one key per line, 5.5MB. **The authority for what is in R2.** Lose it and phase 2 refuses rather than re-fetching 99GB; rebuild it with `phase5 --verify-bucket --repair-ledger` |
+| `uploaded.bak` | `--repair-ledger` | the ledger as it was before the last repair |
 | `import.jsonl` | phase 5 | what the database should hold |
 | `import.meta.json` | phase 5 | whether that manifest is complete. Shipped with it |
 | `*-errors` | any phase | appended to, never truncated. Delete when you have read them |

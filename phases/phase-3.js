@@ -8,6 +8,7 @@ const cardsDir = path.join(cwd, "cards");
 const metaFile = path.join(cwd, "data.meta.json");
 
 const { getDirectories } = require("../lib/utils");
+const ledger = require("../lib/ledger");
 
 function readMeta(){
     try {
@@ -17,19 +18,22 @@ function readMeta(){
     }
 }
 
-// Everything a card is supposed to have on disk, named from its manifest. The
-// old validator asked DigitalOcean whether an image existed; this one asks the
+// Every image a card is supposed to have, named from its manifest, each paired
+// with what it is and the key its finished webp has in the bucket. The old
+// validator asked DigitalOcean whether an image existed; this one asks the
 // manifest, which is both faster and the only thing that still knows what an
 // image is called.
 function expectedFiles(dir, card, looks){
     const expected = new Map();
-    if (card.art){
-        expected.set(path.join(dir, "art.png"), "art");
+    if (card.art && card.defaultFront){
+        expected.set(path.join(dir, "art.png"), { what: "art", key: ledger.artKey(card.defaultFront) });
     }
     for (const look of looks){
-        expected.set(path.join(dir, `${look.hash}-front.png`), `${look.treatment} front`);
+        expected.set(path.join(dir, `${look.hash}-front.png`),
+            { what: `${look.treatment} front`, key: ledger.faceKey(look.hash, "front") });
         if (look.backHash && look.back){
-            expected.set(path.join(dir, `${look.backHash}-back.png`), `${look.treatment} back`);
+            expected.set(path.join(dir, `${look.backHash}-back.png`),
+                { what: `${look.treatment} back`, key: ledger.faceKey(look.backHash, "back") });
         }
     }
     return expected;
@@ -54,12 +58,17 @@ module.exports = async (argv = {}) => {
         return;
     }
 
+    const uploaded = ledger.load();
+    console.log(`📇 ${ledger.describe(uploaded)}`);
+
     const stats = {
         cards: 0,
         looks: 0,
         prints: 0,
         png: 0,
         webp: 0,
+        inBucket: 0,
+        bucketOnly: 0,
         missing: 0,
         orphans: 0,
         unreadable: 0,
@@ -108,18 +117,30 @@ module.exports = async (argv = {}) => {
             }
 
             const expected = expectedFiles(dir, card, looks);
-            for (const [file, what] of expected){
-                // An image counts as present in either form. Phase 4 --prune
-                // deletes the png once the webp is written, so after a pruned
-                // run the png is meant to be gone and only its absence
-                // alongside a missing webp is a problem.
+            for (const [file, { what, key }] of expected){
+                // Three places an image can be, reported separately, because
+                // "this machine has no copy" and "this image does not exist
+                // anywhere" used to look identical here and are not remotely the
+                // same problem.
+                //
+                // Phase 4 --prune deletes the png once the webp is written, so
+                // after a pruned run the png is meant to be gone. And once the
+                // webp is uploaded the local copy is a cache: deleting it costs
+                // nothing, and only something the bucket does not have either is
+                // genuinely missing.
                 const png = fs.existsSync(file);
-                const webp = fs.existsSync(file.replace(/\.png$/, ".webp"));
+                const webp = fs.existsSync(ledger.webpFor(file));
+                const inBucket = uploaded.has(key);
                 if (png) stats.png++;
                 if (webp) stats.webp++;
+                if (inBucket) stats.inBucket++;
                 if (!png && !webp){
-                    stats.missing++;
-                    complaints.push(`⚠️  ${card.name} is missing its ${what} (${path.basename(file)})`);
+                    if (inBucket){
+                        stats.bucketOnly++;
+                    } else {
+                        stats.missing++;
+                        complaints.push(`⚠️  ${card.name} is missing its ${what} (${path.basename(file)})`);
+                    }
                 }
             }
 
@@ -168,7 +189,9 @@ module.exports = async (argv = {}) => {
     console.log(`   🎨 looks:          ${stats.looks}`);
     console.log(`   🖨️  printings:      ${stats.prints}`);
     console.log(`   💾 images on disk: ${stats.png} png, ${stats.webp} webp`);
-    if (stats.missing)    console.log(`   ⚠️  missing images: ${stats.missing}`);
+    console.log(`   ☁️  in the bucket:  ${stats.inBucket}`);
+    if (stats.bucketOnly) console.log(`      └─ ${stats.bucketOnly} of those have no local copy, which is fine - they are uploaded`);
+    if (stats.missing)    console.log(`   ⚠️  missing images: ${stats.missing} - no png, no webp, not in the bucket`);
     if (stats.orphans)    console.log(`   🧹 unreferenced:   ${stats.orphans}`);
     if (stats.partial)    console.log(`   🧩 half written:   ${stats.partial}`);
     if (stats.deleted)    console.log(`   🗑️  deleted:        ${stats.deleted} files, ${(stats.reclaimed / 1073741824).toFixed(2)} GB reclaimed`);
@@ -187,7 +210,7 @@ module.exports = async (argv = {}) => {
         console.log(`   ...and ${complaints.length - shown.length} more`);
     }
     if (!complaints.length){
-        console.log("   ✨ Everything the manifests name is on disk");
+        console.log("   ✨ Everything the manifests name is either on disk or in the bucket");
     }
     if ((stats.orphans || stats.partial) && !argv.prune){
         console.log("\n   Pass --prune to delete what nothing references.");
