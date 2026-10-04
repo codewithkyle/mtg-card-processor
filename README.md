@@ -47,6 +47,21 @@ node import.js --file import.jsonl --prune                # apply locally
 
 Check the `Database:` line it prints before answering the prompt.
 
+Every real deploy backs the database up first: `mysqldump` runs on the server,
+the gzipped result comes down to `backups/` mode 600, and the import runs only
+once its checksum matches the server's and the dump carries the trailer that
+says it is not truncated. A dump that fails any of that is kept as `.corrupt`
+and nothing is imported. `--no-backup` skips the whole step; a `--dry-run` has
+nothing to save and skips it anyway.
+
+The backup is the whole database, Decks and Sleeves and Sessions included -
+the user rows the manifest deliberately leaves on the server. Keep it out of
+anywhere shared. `local-db.sh` loads one as it stands, gzip and all:
+
+```bash
+DD_DUMP=backups/divinedrop-<host>-<stamp>.sql.gz ./local-db.sh reset
+```
+
 `--prune` deletes rows nothing can render. `--remove-withdrawn` deletes cards
 Scryfall no longer publishes. **Both delete `Deck_Cards` rows**, so read the
 output — some decks come up a card short. Never automate either one. What they
@@ -68,6 +83,10 @@ remove is written to `orphans-removed.tsv` and `withdrawn-removed.tsv` first.
 | `--repair-ledger` | 5 | with `--verify-bucket`: rewrite the ledger as what R2 holds |
 | `--env-file <file>` | deploy | install a `.env` on the server |
 | `--runner <auto\|node\|docker>` | deploy | how to run it remotely |
+| `--no-backup` | deploy | import without backing the database up first |
+| `--backup-dir <dir>` | deploy | where the backup lands, default `backups/` |
+| `--keep-remote-backup` | deploy | leave the server's copy of the dump where it was made |
+| `--mysql-image <ref>` | deploy | image the dump runs from in docker, default `mysql:8.0` |
 
 ## If something refuses
 
@@ -78,6 +97,8 @@ remove is written to `orphans-removed.tsv` and `withdrawn-removed.tsv` first.
 | `--remove-withdrawn` refused | `import.meta.json` says the manifest is incomplete | `--assume-complete` |
 | withdrawn sweep over 5% | the same shortfall, wholesale | `--withdrawn-max-share <n>` |
 | `--repair-ledger` would drop over 5% | wrong bucket or endpoint | `--force` |
+| deploy: nothing can take a backup | the server has neither `mysqldump` nor docker | `--no-backup` |
+| deploy: backup checksum mismatch, or no `Dump completed` trailer | the dump arrived short. It is kept as `.corrupt` and nothing was imported - run the deploy again | none, and do not add one |
 
 Only override when you know why the number is what it is.
 
@@ -90,6 +111,11 @@ Only override when you know why the number is what it is.
 **`Access denied for user ''`** — the server's `.env` sets `DSN` in Go driver
 format. Remove `DSN` from it and let `DB_*` speak.
 
+**The deploy says the server's mysqldump is MariaDB's** — it dumps from a
+`mysql:8.0` container instead, because MariaDB's client has never had
+`--set-gtid-purged`. With no docker there either it uses MariaDB's client
+anyway and says so; check that what comes back restores before relying on it.
+
 **Out of disk** — the images in `cards/` are a cache once uploaded, so deleting
 them is safe. Run `npm run phase5 -- --verify-bucket` first to confirm the ledger
 matches R2. Keep the `uploaded` file itself, or phase 2 will refuse to run.
@@ -100,6 +126,7 @@ matches R2. Keep the `uploaded` file itself, or phase 2 will refuse to run.
 | --- | --- |
 | `uploaded` | **yes** — the record of what is in R2, 5.5MB. Rebuild with `phase5 --verify-bucket --repair-ledger` |
 | `.env` | yes. Never committed, never shipped to the server |
+| `backups/` | the pre-deploy dumps, mode 600, gitignored. Every user row the database has |
 | `database.sql` | production backup, used by `local-db.sh` |
 | `data.jsonl` | regenerable by phase 0, 632MB |
 | `cards/` | manifests regenerable by phase 1 (285MB); the images are a cache (15GB) |

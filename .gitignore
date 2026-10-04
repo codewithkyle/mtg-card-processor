@@ -29,3 +29,6 @@ import.meta.json
 withdrawn-removed.tsv
 legacy-cards.txt
 orphans-removed.tsv
+
+# the pre-deploy database dumps deploy-import.sh brings down
+backups/
